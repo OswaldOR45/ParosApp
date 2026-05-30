@@ -1,0 +1,14 @@
+# NUNCA subir secretos ni credenciales
+.streamlit/secrets.toml
+*.json
+service_account*.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# OS
+.DS_Store
