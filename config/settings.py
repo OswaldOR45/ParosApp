@@ -15,9 +15,6 @@ HOJA_MOTIVOS = "cat_motivos"   # opcional
 # El código empata por NOMBRE (no por posición), así que el orden de tus
 # columnas puede variar. Si algún encabezado en tu hoja está escrito distinto,
 # corrige EL TEXTO de la derecha aquí (es el único lugar que hay que tocar).
-#
-# OJO con J y M: si tu encabezado dice "DURACIÓN (PARO PROGRAMADO) inicio-
-# finalización", quita el "inicio-finalización" en la hoja, o agrégalo aquí.
 # ---------------------------------------------------------------------------
 FIELD_TO_HEADER = {
     "timestamp":     "TIMESTAMP",
@@ -46,7 +43,7 @@ FIELD_TO_HEADER = {
 # Catálogos por defecto (la app funciona desde el día 1 sin pestañas extra)
 # ---------------------------------------------------------------------------
 TURNOS = ["A", "B", "C"]
-LINEAS = ["Línea 1", "Línea 2"]
+LINEAS = ["Línea 1", "Línea 2", "Línea 1 y 2"]
 
 AREAS = [
     "EXTRUSIÓN", "DOSIFICACIÓN", "SERVICIOS/ENERGÍA", "EMPAQUE", "GENERAL",

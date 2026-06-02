@@ -10,12 +10,19 @@ VISTA 1 — OPERADOR (Registro de paro post-evento)
 - Duración en formato H:MM.
 """
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from config import settings
 from data.sheets import cargar_catalogos, guardar_paro
 from utils.tiempo import duracion_hhmm, total_minutos
+from views.operador import ahora
+
+TZ = ZoneInfo("America/Mexico_City")
+
+def ahora_mx() -> datetime:
+    return datetime.now(TZ)
 
 st.markdown(
     """
@@ -59,12 +66,15 @@ equipo = st.pills("Equipo", cat["equipos"], key=f"equipo_{v}",
 
 # --- 5. Tiempos (24h) ------------------------------------------------------
 st.subheader("5 · ¿Cuándo? (24h)")
-fecha = st.date_input("Fecha", value=date.today(), key=f"fecha_{v}")
+_ahora = ahora_mx()
+fecha = st.date_input("Fecha", value=_ahora.date(), key=f"fecha_{v}")
 col_i, col_f = st.columns(2)
 with col_i:
-    hora_inicio = st.time_input("Inicio", key=f"hi_{v}", step=60)
+    hora_inicio = st.time_input("Inicio", value=_ahora.time().replace(second=0, microsecond=0),
+                                key=f"hi_{v}", step=60)
 with col_f:
-    hora_fin = st.time_input("Fin", key=f"hf_{v}", step=60)
+    hora_fin = st.time_input("Fin", value=_ahora.time().replace(second=0, microsecond=0),
+                             key=f"hf_{v}", step=60)
 
 dur_txt = duracion_hhmm(fecha, hora_inicio, hora_fin)
 st.metric("Duración", f"{dur_txt} h")
@@ -109,7 +119,7 @@ if st.button("Guardar Paro", type="primary", use_container_width=True):
         for e in errores:
             st.error(e, icon="🚫")
     else:
-        ahora = datetime.now()
+        ahora = ahora_mx()
         hi = hora_inicio.strftime("%H:%M")
         hf = hora_fin.strftime("%H:%M")
         es_prog = tipo_paro == settings.PROGRAMADO
