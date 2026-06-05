@@ -4,11 +4,8 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="da5f7432-8e4b-4071-a25c-eaedaa82c7d4" name="Changes" comment="Fix tiempo">
-      <change afterPath="$PROJECT_DIR$/packages.txt" afterDir="false" />
+    <list default="true" id="da5f7432-8e4b-4071-a25c-eaedaa82c7d4" name="Changes" comment="Fix dashboard L1 y L2">
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/dashboard.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/dashboard.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/operador.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/operador.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -119,7 +116,15 @@
       <option name="project" value="LOCAL" />
       <updated>1780426269905</updated>
     </task>
-    <option name="localTasksCounter" value="2" />
+    <task id="LOCAL-00002" summary="Fix dashboard L1 y L2">
+      <option name="closed" value="true" />
+      <created>1780429764715</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1780429764717</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
     <servers />
   </component>
   <component name="Vcs.Log.Tabs.Properties">
@@ -135,6 +140,7 @@
   </component>
   <component name="VcsManagerConfiguration">
     <MESSAGE value="Fix tiempo" />
-    <option name="LAST_COMMIT_MESSAGE" value="Fix tiempo" />
+    <MESSAGE value="Fix dashboard L1 y L2" />
+    <option name="LAST_COMMIT_MESSAGE" value="Fix dashboard L1 y L2" />
   </component>
 </project>
