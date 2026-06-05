@@ -8,6 +8,11 @@ Aquí SÍ se permite selectbox: es para técnicos, no para piso.
 import streamlit as st
 
 from data.sheets import leer_paros, actualizar_paro
+from utils.auth import requiere_password
+
+# Pide contraseña antes de mostrar o modificar cualquier dato.
+# Producción no puede entrar aquí sin la contraseña de Mantenimiento.
+requiere_password("mantenimiento")
 
 st.title("Mantenimiento · Completar paros")
 
