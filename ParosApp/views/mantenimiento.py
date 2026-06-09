@@ -10,6 +10,8 @@ import streamlit as st
 from data.sheets import leer_paros, actualizar_paro
 from utils.auth import requiere_password
 
+from ParosApp.data.sheets import cargar_catalogos
+
 # Pide contraseña antes de mostrar o modificar cualquier dato.
 # Producción no puede entrar aquí sin la contraseña de Mantenimiento.
 requiere_password("mantenimiento")
@@ -40,9 +42,15 @@ st.subheader("Completar un paro")
 
 paro_id = st.selectbox("ID de paro", pendientes["id_paro"].tolist())
 
+cat = cargar_catalogos()
+
 with st.form("completar"):
     causa_r = st.text_input("Causa raíz *")
     componente = st.text_input("Componente específico")
+    tipo_int = st.radio("Tipo de intervención *", cat["tipos_intervencion"],
+                        index=None, horizontal=True,
+                        help="Reemplazo reinicia la vida de la pieza; "
+                             "Reparación/Ajuste no.")
     accion = st.text_area("Acción realizada", height=80)
     refaccion = st.text_input("Refacción utilizada")
     orden = st.text_input("Orden de Trabajo (opcional)")
@@ -52,10 +60,13 @@ with st.form("completar"):
 if enviar:
     if not causa_r.strip():
         st.error("La causa raíz es obligatoria para cerrar un ACR.")
+    elif not tipo_int:
+        st.error("Selecciona el tipo de intervención" "Reemplazo | Reparación | Ajuste" )
     else:
         campos = {
             "causa_raiz": causa_r.strip(),
             "componente": componente.strip(),
+            "tipo_intervencion":tipo_int,
             "accion": accion.strip(),
             "refaccion": refaccion.strip(),
         }

@@ -18,3 +18,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# ANALISIS
+service_account.json
+salidas_analisis/

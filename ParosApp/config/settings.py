@@ -59,6 +59,8 @@ EQUIPOS = [
 PROGRAMADO = "PROGRAMADO"
 NO_PROGRAMADO = "NO PROGRAMADO"
 
+TIPOS_INTERVENCION = ["Reemplazo", "Reparación", "Ajuste"]
+
 # Orden aprox. por frecuencia (define el orden de los botones en pantalla)
 MOTIVOS = [
     ("Cambio de Producto",       PROGRAMADO),
@@ -92,4 +94,5 @@ def catalogos_default() -> dict:
         "equipos": EQUIPOS,
         "motivos": [m for m, _ in MOTIVOS],
         "tipo_por_motivo": {m: t for m, t in MOTIVOS},
+        "tipos_intervencion": TIPOS_INTERVENCION,
     }
