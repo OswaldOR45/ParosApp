@@ -136,7 +136,7 @@ def cargar_desde_sheets() -> pd.DataFrame:
     creds = Credentials.from_service_account_file("service_account.json", scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(os.environ["SPREADSHEET_KEY"])
-    ws = sh.worksheet(os.environ.get("HOJA_PAROS", "PAROSV2_PRUEBA"))
+    ws = sh.worksheet(os.environ.get("HOJA_PAROS", "PAROSV2"))
     df = pd.DataFrame(ws.get_all_records()).astype(str).fillna("")
     return _renombrar_columnas(df)
 
