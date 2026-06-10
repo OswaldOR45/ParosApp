@@ -6,9 +6,10 @@ Catálogos, mapeo de columnas y reglas de negocio en un solo lugar.
 # ---------------------------------------------------------------------------
 # Pestañas (worksheets) dentro del Google Sheet "Base de Datos Producción 2026"
 # ---------------------------------------------------------------------------
-HOJA_PAROS = "PAROSV2_PRUEBA"
-HOJA_EQUIPOS = "cat_equipos"   # opcional
-HOJA_MOTIVOS = "cat_motivos"   # opcional
+HOJA_PAROS = "PAROSV2"
+HOJA_EQUIPOS = "cat_equipos"          # opcional
+HOJA_MOTIVOS = "cat_motivos"          # opcional
+HOJA_COMPONENTES = "cat_componentes"  # catálogo dinámico por equipo
 
 # ---------------------------------------------------------------------------
 # MAPEO interno -> ENCABEZADO EXACTO de tu hoja (fila 1).
@@ -35,6 +36,7 @@ FIELD_TO_HEADER = {
     "orden_trabajo": "ORDEN DE TRABAJO",
     "causa_raiz":    "CAUSA RAÍZ",
     "componente":    "COMPONENTE",
+    "tipo_intervencion": "TIPO DE INTERVENCIÓN",
     "accion":        "ACCIÓN REALIZADA",
     "refaccion":     "REFACCIÓN",
 }
@@ -46,7 +48,7 @@ TURNOS = ["A", "B", "C"]
 LINEAS = ["Línea 1", "Línea 2", "Línea 1 y 2"]
 
 AREAS = [
-    "EXTRUSIÓN", "DOSIFICACIÓN", "SERVICIOS/ENERGÍA", "EMPAQUE", "GENERAL",
+    "EXTRUSIÓN", "DOSIFICACIÓN", "SERVICIOS/ENERGÍA/AGUA", "EMPAQUE", "GENERAL",
     "ENFRIADOR", "MOLIENDA", "PLANTA", "CALDERAS", "SECADOR", "COATER",
     "TRANSPORTE NEUMATICO", "ZARANDA", "RASTRA", "LIMPIADORES",
 ]
@@ -59,6 +61,14 @@ EQUIPOS = [
 PROGRAMADO = "PROGRAMADO"
 NO_PROGRAMADO = "NO PROGRAMADO"
 
+# ---------------------------------------------------------------------------
+# Tipo de intervención de mantenimiento.
+# Define cómo el modelo Weibull lee la VIDA del componente:
+#   Reemplazo  -> reinicia el reloj de vida (punto de RENOVACIÓN). Es el evento
+#                 que el modelo usa como "falla → pieza nueva".
+#   Reparación -> restaura parcialmente; NO reinicia el reloj (sistema reparable).
+#   Ajuste     -> intervención menor; normalmente no cuenta como fin de vida.
+# ---------------------------------------------------------------------------
 TIPOS_INTERVENCION = ["Reemplazo", "Reparación", "Ajuste"]
 
 # Orden aprox. por frecuencia (define el orden de los botones en pantalla)
@@ -81,6 +91,7 @@ MOTIVOS = [
     ("Error de Programación",    NO_PROGRAMADO),
     ("Intervención Técnico",     NO_PROGRAMADO),
     ("Paro Planta Programado",   PROGRAMADO),
+    ("Arranque Planta Programado",  PROGRAMADO),
     ("Proyectos",                PROGRAMADO),
     ("Inventario",               PROGRAMADO),
 ]

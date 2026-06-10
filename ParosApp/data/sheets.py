@@ -124,3 +124,65 @@ def cargar_catalogos() -> dict:
     except Exception:
         pass
     return base
+
+
+# --- Catálogo dinámico de componentes (por equipo) -------------------------
+@st.cache_data(ttl=300)
+def leer_componentes(equipo: str) -> list:
+    """
+    Devuelve los componentes del catálogo para `equipo`, filtrando los activos.
+    Si la pestaña no existe o está vacía, devuelve [] (la app sigue funcionando
+    y el usuario podrá agregar el primer componente desde la vista).
+
+    Encabezados esperados en la fila 1 de `cat_componentes`:
+        EQUIPO | COMPONENTE | ACTIVO   (orden libre; se empata por nombre)
+    """
+    try:
+        registros = _ws(settings.HOJA_COMPONENTES).get_all_records()
+    except Exception:
+        return []
+    if not registros:
+        return []
+
+    eq_target = _norm(equipo)
+    nombres = []
+    for r in registros:
+        norm = {_norm(k): v for k, v in r.items()}
+        if _norm(norm.get("EQUIPO", "")) != eq_target:
+            continue
+        # Si no hay columna ACTIVO o está vacía, asumimos activo.
+        activo = _norm(norm.get("ACTIVO", "SI"))
+        if activo not in ("SI", "S", "TRUE", "1", ""):
+            continue
+        nombre = str(norm.get("COMPONENTE", "")).strip()
+        if nombre:
+            nombres.append(nombre)
+    return sorted(set(nombres), key=lambda s: s.lower())
+
+
+def agregar_componente(equipo: str, componente: str):
+    """
+    Agrega un componente al catálogo. Devuelve (nombre_final, era_nuevo).
+
+    Si ya existe una entrada equivalente (comparación normalizada — ignora
+    acentos, mayúsculas y espacios), NO duplica: devuelve el nombre tal como
+    está guardado y era_nuevo = False. Esto previene fragmentación silenciosa.
+    """
+    nombre = " ".join(str(componente).split()).strip()
+    if not nombre:
+        raise ValueError("El nombre del componente no puede estar vacío.")
+
+    for ex in leer_componentes(equipo):
+        if _norm(ex) == _norm(nombre):
+            return ex, False  # ya existe -> reutilizar
+
+    ws = _ws(settings.HOJA_COMPONENTES)
+    mapa, header = _mapa_columnas(ws)
+    fila = [""] * len(header)
+    for clave, valor in {"EQUIPO": equipo, "COMPONENTE": nombre, "ACTIVO": "SÍ"}.items():
+        idx = mapa.get(_norm(clave))
+        if idx:
+            fila[idx - 1] = valor
+    ws.append_row(fila, value_input_option="USER_ENTERED")
+    leer_componentes.clear()
+    return nombre, True
