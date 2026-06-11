@@ -92,10 +92,17 @@ if motivo:
     else:
         st.warning(f"Paro **{tipo_paro}** (clasificado automáticamente)", icon="⚠️")
 
-# --- 7. ¿Necesita ACR? (director) -----------------------------------------
-st.subheader("7 · ¿Necesita Análisis Causa Raíz?")
-necesita_acr = st.segmented_control("ACR", ["SÍ", "NO"], key=f"acr_{v}",
-                                    label_visibility="collapsed")
+# --- 7. Apoyo externo (ACR) -----------------------------------------------
+# A quién llamó el operador. "NO" = paro operativo sin intervención técnica.
+# Cualquiera de las primeras tres manda el paro a la cola de Mantenimiento.
+st.subheader("7 · ¿Solicitaste apoyo externo (ACR)?")
+necesita_acr = st.segmented_control(
+    "Apoyo externo",
+    ["RSI", "STEO", "AMBOS", "NO"],
+    key=f"acr_{v}",
+    label_visibility="collapsed",
+    help="Indica a quién llamaste. Si no hubo intervención técnica, marca NO.",
+)
 
 # --- 8. Descripción (opcional) --------------------------------------------
 st.subheader("8 · Descripción (opcional)")
@@ -112,7 +119,7 @@ if st.button("Guardar Paro", type="primary", use_container_width=True):
     if not area:    errores.append("Selecciona el **área**.")
     if not equipo:  errores.append("Selecciona el **equipo**.")
     if not motivo:  errores.append("Selecciona el **motivo**.")
-    if not necesita_acr: errores.append("Indica si **necesita ACR**.")
+    if not necesita_acr: errores.append("Indica si **solicitaste apoyo externo**.")
     if total_minutos(fecha, hora_inicio, hora_fin) <= 0:
         errores.append("Revisa las horas: la duración debe ser mayor a 0.")
 

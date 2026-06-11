@@ -7,7 +7,8 @@ Aquí SÍ se permite selectbox: es para técnicos, no para piso.
 """
 import streamlit as st
 
-from data.sheets import (leer_paros, actualizar_paro, cargar_catalogos, leer_componentes, agregar_componente)
+from data.sheets import (leer_paros, actualizar_paro, cargar_catalogos,
+                         leer_componentes, agregar_componente)
 from utils.auth import requiere_password
 
 # Pide contraseña antes de mostrar o modificar cualquier dato.
@@ -23,13 +24,27 @@ if df.empty:
 
 acr = df.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
 causa = df.get("causa_raiz", "").fillna("").astype(str).str.strip()
-pendientes = df[(acr.isin(["SI", "SÍ"])) & (causa == "")]
+
+# Valores que mandan el paro a la cola de Mantenimiento:
+#   - "SI"/"SÍ"            -> paros antiguos
+#   - "RSI"/"STEO"/"AMBOS" -> nuevos: a quién llamó el operador
+# "NO" o cualquier otra cosa queda fuera (paro operativo sin intervención).
+VALORES_CON_APOYO = {"SI", "SÍ", "RSI", "STEO", "AMBOS"}
+pendientes = df[acr.isin(VALORES_CON_APOYO) & (causa == "")]
 
 st.subheader(f"Paros que requieren ACR y están pendientes ({len(pendientes)})")
 
 cols_vista = [c for c in ["id_paro", "turno", "linea", "area", "equipo",
-                          "motivo", "descripcion"] if c in pendientes.columns]
-st.dataframe(pendientes[cols_vista], use_container_width=True, hide_index=True)
+                          "motivo", "necesita_acr", "descripcion"]
+              if c in pendientes.columns]
+st.dataframe(
+    pendientes[cols_vista],
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "necesita_acr": st.column_config.TextColumn("Apoyo solicitado"),
+    },
+)
 
 if pendientes.empty:
     st.success("No hay paros pendientes de causa raíz.")
