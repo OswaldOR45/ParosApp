@@ -39,6 +39,10 @@ FIELD_TO_HEADER = {
     "tipo_intervencion": "TIPO DE INTERVENCIÓN",
     "accion":        "ACCIÓN REALIZADA",
     "refaccion":     "REFACCIÓN",
+    "ini_int":            "INICIO INTERVENCIÓN",
+    "fin_int":            "FIN INTERVENCIÓN",
+    "dur_int":            "DURACIÓN INTERVENCIÓN",
+    "firma_produccion":   "FIRMA PRODUCCIÓN",
 }
 
 # ---------------------------------------------------------------------------

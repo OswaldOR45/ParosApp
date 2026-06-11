@@ -30,6 +30,16 @@ def _password_correcta(seccion: str, ingresada: str) -> bool:
     return hmac.compare_digest(str(ingresada), str(esperada))
 
 
+def verificar_password(seccion: str, ingresada: str) -> bool:
+    """
+    Valida una contraseña SIN bloquear la vista. Diseñado para autenticaciones
+    secundarias dentro de un flujo ya autenticado — por ejemplo, la firma del
+    supervisor de producción al cerrar un ACR (mantenimiento ya está adentro,
+    producción solo firma puntualmente sin cambiar de sesión).
+    """
+    return _password_correcta(seccion, ingresada)
+
+
 def requiere_password(seccion: str = "mantenimiento",
                       titulo: str = "Acceso restringido") -> None:
     """
