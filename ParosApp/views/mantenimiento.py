@@ -7,16 +7,18 @@ Aquí SÍ se permite selectbox: es para técnicos, no para piso.
 """
 from datetime import date as _date
 
+import pandas as pd
 import streamlit as st
 
 from data.sheets import (leer_paros, actualizar_paro, cargar_catalogos,
                          leer_componentes, agregar_componente)
-from utils.auth import requiere_password, verificar_password
+from utils.auth import requiere_empresa, verificar_password
 from utils.tiempo import duracion_hhmm, total_minutos
 
 # Pide contraseña antes de mostrar o modificar cualquier dato.
-# Producción no puede entrar aquí sin la contraseña de Mantenimiento.
-requiere_password("mantenimiento")
+# Cada empresa entra con su contraseña y solo ve los paros que le tocan
+# (RSI -> RSI+AMBOS, STEO -> STEO+AMBOS, ADMIN -> todo).
+EMPRESA = requiere_empresa()
 
 st.title("Mantenimiento · Completar paros")
 
@@ -25,6 +27,15 @@ if df.empty:
     st.info("Aún no hay paros registrados.")
     st.stop()
 
+df = df.copy()
+
+# Fecha del paro a partir del TIMESTAMP (momento de registro). El operador
+# captura una fecha, pero hoy NO se persiste en la hoja: lo único con fecha es
+# TIMESTAMP. Para casi todos los paros (registrados el mismo día) coincide.
+if "timestamp" in df.columns:
+    df["fecha"] = (pd.to_datetime(df["timestamp"], errors="coerce")
+                   .dt.strftime("%Y-%m-%d").fillna(""))
+
 acr = df.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
 causa = df.get("causa_raiz", "").fillna("").astype(str).str.strip()
 
@@ -32,12 +43,23 @@ causa = df.get("causa_raiz", "").fillna("").astype(str).str.strip()
 #   - "SI"/"SÍ"            -> paros antiguos (esquema previo a Ola 1)
 #   - "RSI"/"STEO"/"AMBOS" -> nuevos: a quién llamó el operador
 # "NO" o cualquier otra cosa queda fuera (paro operativo sin intervención).
-VALORES_CON_APOYO = {"SI", "SÍ", "RSI", "STEO", "AMBOS"}
-pendientes = df[acr.isin(VALORES_CON_APOYO) & (causa == "")]
+#
+# Visibilidad por empresa: cada quien ve los suyos + AMBOS + legacy (SI/SÍ,
+# ambiguos, los puede atender cualquiera). ADMIN ve todo.
+LEGACY = {"SI", "SÍ"}
+if EMPRESA == "RSI":
+    VISIBLES = {"RSI", "AMBOS"} | LEGACY
+elif EMPRESA == "STEO":
+    VISIBLES = {"STEO", "AMBOS"} | LEGACY
+else:  # ADMIN
+    VISIBLES = {"RSI", "STEO", "AMBOS"} | LEGACY
 
-st.subheader(f"Paros que requieren ACR y están pendientes ({len(pendientes)})")
+pendientes = df[acr.isin(VISIBLES) & (causa == "")]
 
-cols_vista = [c for c in ["id_paro", "turno", "linea", "area", "equipo",
+etiqueta = "todas las empresas" if EMPRESA == "ADMIN" else EMPRESA
+st.subheader(f"Paros pendientes · {etiqueta} ({len(pendientes)})")
+
+cols_vista = [c for c in ["fecha", "id_paro", "turno", "linea", "area", "equipo",
                           "motivo", "necesita_acr", "descripcion"]
               if c in pendientes.columns]
 st.dataframe(
@@ -45,6 +67,7 @@ st.dataframe(
     use_container_width=True,
     hide_index=True,
     column_config={
+        "fecha": st.column_config.TextColumn("Fecha"),
         "necesita_acr": st.column_config.TextColumn("Apoyo solicitado"),
     },
 )
@@ -65,6 +88,23 @@ equipo_paro = str(fila_paro.get("equipo", "")).strip()
 apoyo_paro = str(fila_paro.get("necesita_acr", "")).strip()
 st.caption(f"Equipo del paro: **{equipo_paro or '—'}** · "
            f"Apoyo solicitado: **{apoyo_paro or '—'}**")
+
+# Quién ATIENDE de verdad (se guarda en "ATENDIDO POR"). Para RSI/STEO es su
+# propia empresa, automático. El ADMIN puede cerrar cualquiera, así que en
+# AMBOS/legacy debe indicar qué empresa hizo el trabajo (en RSI/STEO puros se
+# toma de ahí). Esto distingue, en los AMBOS, quién resolvió vs. a quién se llamó.
+if EMPRESA in ("RSI", "STEO"):
+    empresa_atiende = EMPRESA
+else:  # ADMIN
+    apoyo_norm = apoyo_paro.upper()
+    if apoyo_norm in ("RSI", "STEO"):
+        empresa_atiende = apoyo_norm
+    else:  # AMBOS o legacy (SI/SÍ)
+        empresa_atiende = st.radio(
+            "¿Qué empresa atendió este paro? *",
+            ["RSI", "STEO"], index=None, horizontal=True,
+            key=f"emp_{paro_id}",
+        )
 
 cat = cargar_catalogos()
 componentes_eq = leer_componentes(equipo_paro) if equipo_paro else []
@@ -145,6 +185,8 @@ if enviar:
     elif not verificar_password("produccion", firma_pwd):
         errores.append("Contraseña de producción incorrecta. "
                        "Pide al supervisor que la verifique.")
+    if not empresa_atiende:
+        errores.append("Indica qué empresa atendió el paro (RSI o STEO).")
 
     if errores:
         for e in errores:
@@ -174,6 +216,7 @@ if enviar:
             "ini_int": hora_ini_int.strftime("%H:%M"),
             "fin_int": hora_fin_int.strftime("%H:%M"),
             "dur_int": dur_int_txt,
+            "empresa_acr": empresa_atiende,
             "firma_produccion": "SÍ",
         }
         if orden.strip():

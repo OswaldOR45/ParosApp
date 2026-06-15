@@ -33,6 +33,7 @@ FIELD_TO_HEADER = {
     "dur_noprog":    "DURACIÓN (PARO NO PROGRAMADO)",
     "id_paro":       "ID_PARO",
     "necesita_acr":  "¿NECESITA ACR?",
+    "empresa_acr":   "ATENDIDO POR",
     "orden_trabajo": "ORDEN DE TRABAJO",
     "causa_raiz":    "CAUSA RAÍZ",
     "componente":    "COMPONENTE",
