@@ -19,6 +19,10 @@ operador = st.Page(
 mantenimiento = st.Page(
     "views/mantenimiento.py", title="Mantenimiento", icon=":material/build:"
 )
+mantenimiento_dashboard = st.Page(
+    "views/mantenimiento_dashboard.py", title="Dashboard Mtto",
+    icon=":material/engineering:"
+)
 dashboard = st.Page(
     "views/dashboard.py", title="Dashboard", icon=":material/insights:"
 )
@@ -29,7 +33,7 @@ exportacion = st.Page(
 pg = st.navigation(
     {
         "Piso de producción": [operador, mantenimiento],
-        "Análisis": [dashboard, exportacion],
+        "Análisis": [mantenimiento_dashboard, dashboard, exportacion],
     }
 )
 pg.run()
