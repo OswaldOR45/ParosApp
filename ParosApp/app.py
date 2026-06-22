@@ -26,6 +26,9 @@ mantenimiento_dashboard = st.Page(
 dashboard = st.Page(
     "views/dashboard.py", title="Dashboard", icon=":material/insights:"
 )
+pareto = st.Page(
+    "views/pareto.py", title="Pareto", icon=":material/leaderboard:"
+)
 exportacion = st.Page(
     "views/exportacion.py", title="Exportar", icon=":material/download:"
 )
@@ -33,7 +36,7 @@ exportacion = st.Page(
 pg = st.navigation(
     {
         "Piso de producción": [operador, mantenimiento],
-        "Análisis": [mantenimiento_dashboard, dashboard, exportacion],
+        "Análisis": [mantenimiento_dashboard, dashboard, pareto, exportacion],
     }
 )
 pg.run()
