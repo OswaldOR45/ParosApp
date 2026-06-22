@@ -12,18 +12,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# === DIAGNÓSTICO TEMPORAL — borrar después ===
-from data.sheets import _get_spreadsheet
-ws = _get_spreadsheet().worksheet("PAROSV2")
-vals = ws.get_all_values()
-st.warning("🔍 DIAGNÓSTICO TEMPORAL")
-st.write("Filas totales con contenido:", len(vals))
-st.write("Encabezados (fila 1):", vals[0] if vals else "hoja vacía")
-st.write("Últimas 5 filas:")
-st.write(vals[-5:])
-st.stop()  # corta aquí para que veas el diagnóstico sin que cargue el resto
-# === FIN DIAGNÓSTICO ===
-
 # Cada vista es un archivo en /views. El de operador es la página por defecto.
 operador = st.Page(
     "views/operador.py", title="Registrar Paro", icon=":material/edit_note:", default=True
