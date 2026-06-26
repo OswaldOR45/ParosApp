@@ -144,7 +144,6 @@ if st.button("Guardar Paro", type="primary", use_container_width=True):
             "equipo": equipo,
             "motivo": motivo,
             "descripcion": descripcion.strip(),
-            # Horas al par de columnas correcto; el otro queda vacío
             "ini_prog":   hi if es_prog else "",
             "fin_prog":   hf if es_prog else "",
             "dur_prog":   dur_txt if es_prog else "",
@@ -153,7 +152,6 @@ if st.button("Guardar Paro", type="primary", use_container_width=True):
             "dur_noprog": "" if es_prog else dur_txt,
             "id_paro": f"P-{ahora:%Y%m%d-%H%M%S}",
             "necesita_acr": necesita_acr,
-            # Lo llena Mantenimiento:
             "orden_trabajo": "",
             "causa_raiz": "",
             "componente": "",
