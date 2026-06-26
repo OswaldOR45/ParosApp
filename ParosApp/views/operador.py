@@ -99,7 +99,7 @@ if motivo:
 # --- 7. Apoyo externo (ACR) -----------------------------------------------
 # A quién llamó el operador. "NO" = paro operativo sin intervención técnica.
 # Cualquiera de las primeras tres manda el paro a la cola de Mantenimiento.
-st.subheader("7 · ¿Solicitaste apoyo externo (ACR)?")
+st.subheader("7 · ¿Solicitaste apoyo externo?")
 necesita_acr = st.segmented_control(
     "Apoyo externo",
     ["RSI", "STEO", "AMBOS", "NO"],
