@@ -24,7 +24,7 @@ def _destinos(acr: str) -> list[str]:
 
 def _construir_mensaje(registro: dict) -> str:
     ini_noprog = registro.get("ini_noprog", "")
-    tipo = "NO PROGRAMADO" if ini_noprog else "PROGRAMADO"
+    tipo    = "NO PROGRAMADO" if ini_noprog else "PROGRAMADO"
     motivo  = registro.get("motivo", "")
     linea   = registro.get("linea", "")
     area    = registro.get("area", "")
@@ -39,19 +39,29 @@ def _construir_mensaje(registro: dict) -> str:
     icono   = "🔴" if tipo == "NO PROGRAMADO" else "🟡"
 
     lineas = [
-        f"{icono} *Nuevo paro registrado*",
+        f"{icono} Nuevo paro registrado",
         f"",
-        f"📍 *Línea:* {linea} | *Área:* {area}",
-        f"⚙️ *Equipo:* {equipo}",
-        f"🛑 *Motivo:* {motivo} \\({tipo}\\)",
-        f"🕐 *Inicio:* {hi} | *Fin:* {hf} | *Duración:* {dur} h",
-        f"👷 *Turno:* {turno} | *Apoyo:* {acr}",
+        f"📍 Línea: {linea}  |  Área: {area}",
+        f"⚙️ Equipo: {equipo}",
+        f"🛑 Motivo: {motivo} ({tipo})",
+        f"🕐 Inicio: {hi}  |  Fin: {hf}  |  Duración: {dur} h",
+        f"👷 Turno: {turno}  |  Apoyo: {acr}",
     ]
     if desc:
-        lineas.append(f"📝 *Nota:* {desc}")
-    lineas.append(f"🆔 `{id_paro}`")
+        lineas.append(f"📝 Nota: {desc}")
+    lineas.append(f"🆔 {id_paro}")
 
     return "\n".join(lineas)
+
+
+def _enviar(chat_id: str, texto: str) -> None:
+    url = f"https://api.telegram.org/bot{_token()}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": texto,
+        # Sin parse_mode: texto plano, sin problemas de escape
+    }
+    requests.post(url, json=payload, timeout=5)
 
 
 def _enviar(chat_id: str, texto: str) -> None:
@@ -69,13 +79,8 @@ def notificar_paro(registro: dict) -> None:
         return
 
     texto = _construir_mensaje(registro)
-
     for chat_id in destinos:
-        url = f"https://api.telegram.org/bot{_token()}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": texto,
-            "parse_mode": "MarkdownV2",
-        }
-        r = requests.post(url, json=payload, timeout=5)
-        st.session_state["tg_debug"] = str(r.json())
+        try:
+            _enviar(chat_id, texto)
+        except Exception:
+            pass
