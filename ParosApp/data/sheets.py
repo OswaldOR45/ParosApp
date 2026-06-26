@@ -86,6 +86,9 @@ def guardar_paro(registro: dict):
     ws.append_row(fila, value_input_option="USER_ENTERED")
     leer_paros.clear()
 
+    from utils.telegram_notify import notificar_paro
+    notificar_paro(registro)
+
 
 def actualizar_paro(id_paro: str, campos: dict):
     """Actualiza un paro existente (lo usa Mantenimiento). Busca por ID_PARO."""
