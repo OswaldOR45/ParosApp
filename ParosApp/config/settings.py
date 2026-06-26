@@ -110,6 +110,6 @@ def catalogos_default() -> dict:
         "equipos": EQUIPOS,
         "motivos": [m for m, _, _d in MOTIVOS],
         "tipo_por_motivo": {m: t for m, t, _d in MOTIVOS},
-        "descrip_motivo": {m: d for m, _t, d in MOTIVOS},
+        "descrip_motivo": {m: d for m, t, d in MOTIVOS},
         "tipos_intervencion": TIPOS_INTERVENCION,
     }
