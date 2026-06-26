@@ -84,11 +84,14 @@ st.metric("Duración", f"{dur_txt} h")
 st.subheader("6 · Motivo del paro")
 motivo = st.pills("Motivo", cat["motivos"], key=f"motivo_{v}",
                   label_visibility="collapsed")
+descrip_paro = ""
 tipo_paro = ""
 if motivo:
     tipo_paro = cat["tipo_por_motivo"].get(motivo, "")
+    descrip_paro = cat["descrip_motivo"].get(motivo, "")
     if tipo_paro == settings.PROGRAMADO:
         st.info(f"Paro **{tipo_paro}** (clasificado automáticamente)", icon="🗓️")
+        st.info(f"Descripcion -> {descrip_paro}", icon="🔍")
     else:
         st.warning(f"Paro **{tipo_paro}** (clasificado automáticamente)", icon="⚠️")
 
