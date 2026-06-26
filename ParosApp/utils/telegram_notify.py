@@ -62,22 +62,20 @@ def _enviar(chat_id: str, texto: str) -> None:
         "parse_mode": "MarkdownV2",
     }
     requests.post(url, json=payload, timeout=5)
-
-
 def notificar_paro(registro: dict) -> None:
-    """
-    Envía notificación a los grupos correspondientes.
-    Falla silenciosamente para no interrumpir el flujo del operador.
-    """
     acr = str(registro.get("necesita_acr", "NO")).upper()
     destinos = _destinos(acr)
     if not destinos:
-        return  # necesita_acr == "NO", no notificar
+        return
 
     texto = _construir_mensaje(registro)
 
     for chat_id in destinos:
-        try:
-            _enviar(chat_id, texto)
-        except Exception:
-            pass  # Falla silenciosa: el paro ya se guardó en Sheets
+        url = f"https://api.telegram.org/bot{_token()}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": texto,
+            "parse_mode": "MarkdownV2",
+        }
+        r = requests.post(url, json=payload, timeout=5)
+        st.write(r.json())  # ← muestra el error en pantalla temporalmente
