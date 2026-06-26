@@ -78,4 +78,4 @@ def notificar_paro(registro: dict) -> None:
             "parse_mode": "MarkdownV2",
         }
         r = requests.post(url, json=payload, timeout=5)
-        st.write(r.json())  # ← muestra el error en pantalla temporalmente
+        st.error(str(r.json()))
