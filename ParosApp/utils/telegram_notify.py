@@ -78,4 +78,4 @@ def notificar_paro(registro: dict) -> None:
             "parse_mode": "MarkdownV2",
         }
         r = requests.post(url, json=payload, timeout=5)
-        st.error(str(r.json()))
+        st.session_state["tg_debug"] = str(r.json())

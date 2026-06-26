@@ -36,6 +36,8 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+if "tg_debug" in st.session_state:
+    st.error(st.session_state["tg_debug"])
 
 st.title("Registrar Paro")
 
