@@ -94,6 +94,7 @@ if motivo:
         st.info(f"Descripcion -> {descrip_paro}", icon="🔍")
     else:
         st.warning(f"Paro **{tipo_paro}** (clasificado automáticamente)", icon="⚠️")
+        st.info(f"Descripcion -> {descrip_paro}", icon="🔍")
 
 # --- 7. Apoyo externo (ACR) -----------------------------------------------
 # A quién llamó el operador. "NO" = paro operativo sin intervención técnica.
