@@ -77,15 +77,9 @@ def notificar_paro(registro: dict) -> None:
     destinos = _destinos(acr)
     if not destinos:
         return
-
     texto = _construir_mensaje(registro)
     for chat_id in destinos:
-        url = f"https://api.telegram.org/bot{_token()}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": texto,
-        }
-        r = requests.post(url, json=payload, timeout=5)
-        """DEBUGINGG"""
-        st.session_state["tg_debug"] = str(r.json())
-        """HASTA AQUI TERMINA DEBUGGING"""
+        try:
+            _enviar(chat_id, texto)
+        except Exception:
+            pass
