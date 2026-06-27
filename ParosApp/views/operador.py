@@ -37,10 +37,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-"""SOLO DE MOMENTO POR EL DEBUGGING"""
 if "tg_debug" in st.session_state:
     st.error(st.session_state["tg_debug"])
-"""HASTA AQUI TERMINA"""
 
 st.title("Registrar Paro")
 
