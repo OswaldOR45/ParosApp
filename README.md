@@ -11,6 +11,7 @@ Sistema para registrar **paros de producción** en piso y convertirlos en decisi
 ![Plotly](https://img.shields.io/badge/Plotly-viz-3F4F75)
 ![Reliability](https://img.shields.io/badge/Weibull-reliability%20%2F%20scipy-008080)
 ![Data](https://img.shields.io/badge/datos-Google%20Sheets%20API-0F9D58)
+![Telegram](https://img.shields.io/badge/notificaciones-Telegram%20Bot-26A5E4)
 
 ---
 
@@ -27,6 +28,7 @@ Los paros de línea se anotaban de forma dispersa, sin un formato común ni traz
 ### 👷 Captura en piso (vista Operador)
 - **Mobile-first y a prueba de guantes**: sin menús desplegables; usa `segmented_control` y `pills` con áreas táctiles grandes.
 - **Clasificación automática** del paro como *Programado* / *No Programado* derivada del motivo.
+- **Descripción contextual del motivo**: al seleccionar el motivo de paro, se muestra automáticamente una descripción breve que orienta al operador sobre cuándo aplica cada categoría. Las descripciones viven en `config/settings.py` como fuente única de verdad y no se persisten en Sheets.
 - **Enrutamiento de apoyo (ACR)**: el operador indica a quién llamó (RSI / STEO / AMBOS / NO); eso manda el paro a la cola de mantenimiento correcta.
 - Cálculo de duración en formato `H:MM` con manejo de cruce de medianoche.
 
@@ -43,6 +45,13 @@ Los paros de línea se anotaban de forma dispersa, sin un formato común ni traz
 ### 📤 Exportación
 - Descarga a CSV con filtros por equipo y rango de fechas (insumo directo del motor de análisis).
 - Sincronización con Excel de planta vía Power Query desde una pestaña `vista_ricardo`.
+
+### 🔔 Notificaciones automáticas (Telegram Bot)
+- Al guardar un paro, se dispara automáticamente una notificación vía **Telegram Bot API** al grupo correspondiente según el apoyo solicitado.
+- **Enrutamiento inteligente por grupo**: RSI → grupo RSI, STEO → grupo STEO, AMBOS → ambos grupos. Si no se solicitó apoyo (`NO`), no se envía notificación.
+- El mensaje incluye: línea, área, equipo, motivo, tipo de paro, horario, turno y notas del operador.
+- **Falla silenciosa**: si la notificación falla por cualquier razón, el paro ya quedó guardado en Sheets y el operador no ve ningún error — el flujo de captura nunca se interrumpe.
+- Implementado en `utils/telegram_notify.py`; las credenciales (token y chat IDs) se configuran en `secrets.toml` bajo la sección `[telegram]`.
 
 ### 📈 Motor de confiabilidad (offline, `analisis/`)
 - **Auditoría de calidad** de datos (cobertura de campos críticos).
@@ -82,6 +91,7 @@ El control de acceso es por contraseña y por empresa (`RSI` / `STEO` / `ADMIN`)
 | Datos | Google Sheets API (gspread + google-auth, Service Account) |
 | Procesamiento | pandas |
 | Confiabilidad | numpy, scipy, `reliability` (Weibull) |
+| Notificaciones | Telegram Bot API (requests) — enrutamiento por grupo RSI / STEO |
 | Despliegue | Streamlit Community Cloud · Dev Container (GitHub Codespaces) |
 | Zona horaria | `zoneinfo` (America/Mexico_City) + `tzdata` |
 
@@ -106,8 +116,9 @@ app.py  (navegación)
    │                     y escritura segura ante concurrencia.
    │
    ├── utils/
-   │     ├── auth.py     Control de acceso por empresa (hmac.compare_digest)
-   │     └── tiempo.py   Duraciones H:MM (maneja cruce de medianoche)
+   │     ├── auth.py               Control de acceso por empresa (hmac.compare_digest)
+   │     ├── tiempo.py             Duraciones H:MM (maneja cruce de medianoche)
+   │     └── telegram_notify.py    Notificaciones al grupo RSI / STEO / AMBOS vía Bot API
    │
    └── config/settings.py   Catálogos, mapeo campo→encabezado, reglas de negocio
 
@@ -149,7 +160,7 @@ streamlit run app.py
 ```
 
 ### Streamlit Community Cloud
-Pega el contenido de `secrets.toml.example` (con tus valores reales) en *Settings → Secrets*: el bloque `[gcp_service_account]`, la `spreadsheet_key` y las contraseñas por empresa (`rsi_password`, `steo_password`, `mantenimiento_password`, `produccion_password`).
+Pega el contenido de `secrets.toml.example` (con tus valores reales) en *Settings → Secrets*: el bloque `[gcp_service_account]`, la `spreadsheet_key`, las contraseñas por empresa (`rsi_password`, `steo_password`, `mantenimiento_password`, `produccion_password`) y el bloque `[telegram]` con el `token` del bot y los `chat_id_rsi` / `chat_id_steo` de cada grupo.
 
 ### GitHub Codespaces
 El repo incluye un **Dev Container** que instala dependencias y levanta la app automáticamente.
