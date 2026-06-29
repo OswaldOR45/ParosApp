@@ -72,14 +72,20 @@ def _enviar(chat_id: str, texto: str) -> None:
         "parse_mode": "MarkdownV2",
     }
     requests.post(url, json=payload, timeout=5)
+
 def notificar_paro(registro: dict) -> None:
     acr = str(registro.get("necesita_acr", "NO")).upper()
     destinos = _destinos(acr)
     if not destinos:
         return
+
     texto = _construir_mensaje(registro)
+
     for chat_id in destinos:
-        try:
-            _enviar(chat_id, texto)
-        except Exception:
-            pass
+        url = f"https://api.telegram.org/bot{_token()}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": texto,
+        }
+        r = requests.post(url, json=payload, timeout=5)
+        st.session_state["tg_debug"] = str(r.json())
