@@ -2,7 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from data.sheets import leer_paros
+from data.sheets import leer_paros, leer_acrs
 
 st.title("Exportar datos")
 
@@ -12,6 +12,19 @@ if df.empty:
     st.stop()
 
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
+
+# --- Trae los cierres de ACRS y los une al export ---------------------------
+# Un paro AMBOS puede tener hasta 2 filas en ACRS (una por empresa). Se usa
+# LEFT JOIN para no perder paros que aún no tienen ACR cerrado: esos quedan
+# con las columnas de mantenimiento vacías (NaN).
+acrs = leer_acrs()
+if not acrs.empty and "id_paro" in acrs.columns:
+    cols_acr = [c for c in ["id_paro", "empresa", "causa_raiz", "componente",
+                            "tipo_intervencion", "accion", "refaccion",
+                            "ini_int", "fin_int", "dur_int", "orden_trabajo",
+                            "firma_produccion"]
+               if c in acrs.columns]
+    df = df.merge(acrs[cols_acr], on="id_paro", how="left", suffixes=("", "_acr"))
 
 equipos = ["Todos"] + sorted(df["equipo"].dropna().unique().tolist())
 equipo = st.selectbox("Equipo", equipos)

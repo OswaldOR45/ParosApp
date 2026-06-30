@@ -113,3 +113,20 @@ def catalogos_default() -> dict:
         "descrip_motivo": {m: d for m, t, d in MOTIVOS},
         "tipos_intervencion": TIPOS_INTERVENCION,
     }
+HOJA_ACRS = "ACRS"
+
+FIELD_TO_HEADER_ACR = {
+    "id_paro":            "ID_PARO",
+    "empresa":             "EMPRESA",
+    "orden_trabajo":       "ORDEN_TRABAJO",
+    "causa_raiz":          "CAUSA_RAIZ",
+    "componente":          "COMPONENTE",
+    "tipo_intervencion":   "TIPO_INTERVENCION",
+    "accion":              "ACCION",
+    "refaccion":           "REFACCION",
+    "ini_int":             "INI_INT",
+    "fin_int":             "FIN_INT",
+    "dur_int":             "DUR_INT",
+    "firma_produccion":    "FIRMA_PRODUCCION",
+    "timestamp":           "TIMESTAMP",
+}

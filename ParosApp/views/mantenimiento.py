@@ -1,16 +1,18 @@
 """
 VISTA 2 — MANTENIMIENTO (Complementar paro)
-Pendientes = paros con ¿NECESITA ACR? = SÍ y sin Causa Raíz.
-Así los paros programados/preventivos (ACR = NO) NO estorban la cola.
+Pendientes = paros con ¿NECESITA ACR? != NO, y SIN cierre en ACRS para la
+empresa actual. Un paro "AMBOS" queda pendiente para RSI hasta que RSI
+cierre su parte, y pendiente para STEO hasta que STEO cierre la suya,
+de forma independiente.
 Orden de Trabajo es OPCIONAL (hay paros sin orden de mtto).
 Aquí SÍ se permite selectbox: es para técnicos, no para piso.
 """
-from datetime import date as _date
+from datetime import date as _date, datetime as _datetime
 
 import pandas as pd
 import streamlit as st
 
-from data.sheets import (leer_paros, actualizar_paro, cargar_catalogos,
+from data.sheets import (leer_paros, leer_acrs, guardar_acr, cargar_catalogos,
                          leer_componentes, agregar_componente)
 from utils.auth import requiere_empresa, verificar_password
 from utils.tiempo import duracion_hhmm, total_minutos
@@ -28,24 +30,19 @@ if df.empty:
     st.stop()
 
 df = df.copy()
+acrs = leer_acrs()  # historial de cierres por empresa
 
-# Fecha del paro a partir del TIMESTAMP (momento de registro). El operador
-# captura una fecha, pero hoy NO se persiste en la hoja: lo único con fecha es
-# TIMESTAMP. Para casi todos los paros (registrados el mismo día) coincide.
+# Fecha del paro a partir del TIMESTAMP (momento de registro).
 if "timestamp" in df.columns:
     df["fecha"] = (pd.to_datetime(df["timestamp"], errors="coerce")
                    .dt.strftime("%Y-%m-%d").fillna(""))
 
 acr = df.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
-causa = df.get("causa_raiz", "").fillna("").astype(str).str.strip()
 
 # Valores que mandan el paro a la cola de Mantenimiento:
 #   - "SI"/"SÍ"            -> paros antiguos (esquema previo a Ola 1)
 #   - "RSI"/"STEO"/"AMBOS" -> nuevos: a quién llamó el operador
 # "NO" o cualquier otra cosa queda fuera (paro operativo sin intervención).
-#
-# Visibilidad por empresa: cada quien ve los suyos + AMBOS + legacy (SI/SÍ,
-# ambiguos, los puede atender cualquiera). ADMIN ve todo.
 LEGACY = {"SI", "SÍ"}
 if EMPRESA == "RSI":
     VISIBLES = {"RSI", "AMBOS"} | LEGACY
@@ -54,7 +51,33 @@ elif EMPRESA == "STEO":
 else:  # ADMIN
     VISIBLES = {"RSI", "STEO", "AMBOS"} | LEGACY
 
-pendientes = df[acr.isin(VISIBLES) & (causa == "")]
+# --- Pendientes: cruce con ACRS --------------------------------------------
+# Un paro está PENDIENTE para una empresa si no tiene fila en ACRS para esa
+# combinación (id_paro, empresa). ADMIN ve pendiente si falta CUALQUIERA de
+# las empresas que le tocan (para que pueda cerrar lo que sea que falte).
+if not acrs.empty and "id_paro" in acrs.columns and "empresa" in acrs.columns:
+    cerrados_set = set(zip(acrs["id_paro"].astype(str), acrs["empresa"].astype(str).str.upper()))
+else:
+    cerrados_set = set()
+
+def _falta_cierre(row) -> bool:
+    pid = str(row.get("id_paro", ""))
+    apoyo = str(row.get("necesita_acr", "")).strip().upper()
+
+    if EMPRESA in ("RSI", "STEO"):
+        return (pid, EMPRESA) not in cerrados_set
+
+    # ADMIN: pendiente si falta el cierre de cualquier empresa involucrada
+    if apoyo == "AMBOS":
+        return (pid, "RSI") not in cerrados_set or (pid, "STEO") not in cerrados_set
+    elif apoyo in ("RSI", "STEO"):
+        return (pid, apoyo) not in cerrados_set
+    else:  # legacy SI/SÍ -> no sabemos quién, basta con que exista 1 cierre
+        return not any(pid == c[0] for c in cerrados_set)
+
+mask_visible = acr.isin(VISIBLES)
+df_visible = df[mask_visible].copy()
+pendientes = df_visible[df_visible.apply(_falta_cierre, axis=1)]
 
 etiqueta = "todas las empresas" if EMPRESA == "ADMIN" else EMPRESA
 st.subheader(f"Paros pendientes · {etiqueta} ({len(pendientes)})")
@@ -81,18 +104,15 @@ st.subheader("Completar un paro")
 
 paro_id = st.selectbox("ID de paro", pendientes["id_paro"].tolist())
 
-# El componente se elige FUERA del form: el flujo "agregar nuevo" necesita
-# re-render condicional, que dentro de st.form no ocurriría hasta el submit.
 fila_paro = pendientes[pendientes["id_paro"] == paro_id].iloc[0]
 equipo_paro = str(fila_paro.get("equipo", "")).strip()
 apoyo_paro = str(fila_paro.get("necesita_acr", "")).strip()
 st.caption(f"Equipo del paro: **{equipo_paro or '—'}** · "
            f"Apoyo solicitado: **{apoyo_paro or '—'}**")
 
-# Quién ATIENDE de verdad (se guarda en "ATENDIDO POR"). Para RSI/STEO es su
-# propia empresa, automático. El ADMIN puede cerrar cualquiera, así que en
-# AMBOS/legacy debe indicar qué empresa hizo el trabajo (en RSI/STEO puros se
-# toma de ahí). Esto distingue, en los AMBOS, quién resolvió vs. a quién se llamó.
+# Quién ATIENDE de verdad (se guarda como EMPRESA en la fila de ACRS).
+# RSI/STEO: su propia empresa, automático. ADMIN debe indicar cuál cierra
+# si el paro es AMBOS/legacy (puede cerrar cualquiera de las dos por separado).
 if EMPRESA in ("RSI", "STEO"):
     empresa_atiende = EMPRESA
 else:  # ADMIN
@@ -100,9 +120,12 @@ else:  # ADMIN
     if apoyo_norm in ("RSI", "STEO"):
         empresa_atiende = apoyo_norm
     else:  # AMBOS o legacy (SI/SÍ)
+        # Solo ofrece las empresas que AÚN no han cerrado este paro
+        opciones_emp = [e for e in ("RSI", "STEO")
+                        if (str(paro_id), e) not in cerrados_set]
         empresa_atiende = st.radio(
             "¿Qué empresa atendió este paro? *",
-            ["RSI", "STEO"], index=None, horizontal=True,
+            opciones_emp or ["RSI", "STEO"], index=None, horizontal=True,
             key=f"emp_{paro_id}",
         )
 
@@ -127,9 +150,7 @@ if componente_sel == OPCION_NUEVO:
         placeholder="Ej.: Empaque de tapa del coater",
     )
 
-# --- Tiempos de la intervención (fuera del form, para mostrar duración viva) -
-# El técnico llena las dos horas al CERRAR el ACR (modelo "un solo toque").
-# Si la intervención cruzó medianoche, duracion_hhmm lo maneja automáticamente.
+# --- Tiempos de la intervención (fuera del form, para mostrar duración viva)
 st.markdown("**Tiempos de la intervención**")
 col_hi, col_hf = st.columns(2)
 with col_hi:
@@ -145,8 +166,6 @@ if hora_ini_int and hora_fin_int:
 
 with st.form("completar"):
     causa_r = st.text_input("Causa raíz *")
-    # Tipo de intervención: define cómo el modelo lee la vida de la pieza.
-    # Reemplazo = pieza nueva (reinicia el reloj). Sin default: elección consciente.
     tipo_int = st.radio("Tipo de intervención *", cat["tipos_intervencion"],
                         index=None, horizontal=True,
                         help="Reemplazo reinicia la vida de la pieza; "
@@ -192,7 +211,6 @@ if enviar:
         for e in errores:
             st.error(e)
     else:
-        # Resuelve el componente final (lo agrega al catálogo si es nuevo).
         if componente_sel == OPCION_NUEVO:
             try:
                 componente_final, era_nuevo = agregar_componente(
@@ -207,7 +225,9 @@ if enviar:
         else:
             componente_final = componente_sel
 
-        campos = {
+        registro_acr = {
+            "id_paro": paro_id,
+            "empresa": empresa_atiende,
             "causa_raiz": causa_r.strip(),
             "componente": componente_final,
             "tipo_intervencion": tipo_int,
@@ -216,13 +236,13 @@ if enviar:
             "ini_int": hora_ini_int.strftime("%H:%M"),
             "fin_int": hora_fin_int.strftime("%H:%M"),
             "dur_int": dur_int_txt,
-            "empresa_acr": empresa_atiende,
             "firma_produccion": "SÍ",
+            "timestamp": _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         if orden.strip():
-            campos["orden_trabajo"] = orden.strip()
+            registro_acr["orden_trabajo"] = orden.strip()
         try:
-            actualizar_paro(paro_id, campos)
+            guardar_acr(registro_acr)
             st.toast("Paro completado y firmado por producción", icon="✅")
             st.rerun()
         except Exception as e:

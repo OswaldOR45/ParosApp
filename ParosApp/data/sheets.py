@@ -189,3 +189,48 @@ def agregar_componente(equipo: str, componente: str):
     ws.append_row(fila, value_input_option="USER_ENTERED")
     leer_componentes.clear()
     return nombre, True
+
+# --- ACRs: cierre por empresa, separado de PAROSV2 -------------------------
+@st.cache_data(ttl=60)
+def leer_acrs() -> pd.DataFrame:
+    """
+    Lee la hoja ACRS. Cada fila = un cierre de una empresa para un ID_PARO.
+    Un paro 'AMBOS' tendrá hasta 2 filas aquí (una por RSI, una por STEO).
+    """
+    try:
+        registros = _ws(settings.HOJA_ACRS).get_all_records()
+    except Exception:
+        return pd.DataFrame(columns=["id_paro", "empresa"])
+    df = pd.DataFrame(registros)
+    if df.empty:
+        return pd.DataFrame(columns=["id_paro", "empresa"])
+    inverso = {_norm(v): k for k, v in settings.FIELD_TO_HEADER_ACR.items()}
+    df = df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
+    return df
+
+
+def guardar_acr(registro: dict):
+    """
+    Agrega una fila nueva en ACRS (un cierre de una empresa para un paro).
+    registro usa claves internas (id_paro, empresa, causa_raiz, ...).
+    """
+    ws = _ws(settings.HOJA_ACRS)
+    mapa, header = _mapa_columnas(ws)
+    fila = [""] * len(header)
+    faltantes = []
+    for clave, valor in registro.items():
+        encabezado = settings.FIELD_TO_HEADER_ACR.get(clave)
+        if encabezado is None:
+            continue
+        idx = mapa.get(_norm(encabezado))
+        if idx is None:
+            faltantes.append(encabezado)
+            continue
+        fila[idx - 1] = valor
+    if faltantes:
+        raise ValueError(
+            "No encontré estas columnas en ACRS: " + ", ".join(faltantes)
+            + ". Encabezados detectados: " + ", ".join(header)
+        )
+    ws.append_row(fila, value_input_option="USER_ENTERED")
+    leer_acrs.clear()

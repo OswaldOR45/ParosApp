@@ -18,7 +18,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from data.sheets import leer_paros
+from data.sheets import leer_paros, leer_acrs
 from utils.auth import requiere_empresa
 from utils.tiempo import hhmm_a_horas
 
@@ -35,41 +35,44 @@ if df.empty:
 
 df = df.copy()
 
-# --- Derivados base --------------------------------------------------------
+# --- Derivados base ---------------------------------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
 # Tiempo de paro reportado por producción (solo una de las dos columnas trae dato).
 df["h_paro"] = (df.get("dur_prog", "").apply(hhmm_a_horas)
                 + df.get("dur_noprog", "").apply(hhmm_a_horas))
-# Tiempo de intervención reportado por mantenimiento (existe solo al cerrar ACR).
-df["h_int"] = df.get("dur_int", "").apply(hhmm_a_horas)
-# Brecha administrativa. Puede salir NEGATIVA si mtto reportó más tiempo que
-# producción: eso es justamente una discrepancia que vale la pena revisar.
-df["brecha"] = df["h_paro"] - df["h_int"]
-df["brecha_pos"] = df["brecha"].clip(lower=0)
 
-# Normaliza textos para agrupar sin sustos por espacios/celdas vacías.
-for col in ("equipo", "area", "componente", "motivo", "tipo_intervencion"):
+for col in ("equipo", "area", "motivo"):
     df[col] = df.get(col, "").fillna("").astype(str).str.strip()
     df.loc[df[col] == "", col] = "Sin dato"
 
-# Atribución de empresa: empresa_acr (quién atendió) y, si falta, necesita_acr
-# (a quién se llamó). AMBOS/legacy sin definir -> "Sin asignar".
-emp = df.get("empresa_acr", "").fillna("").astype(str).str.strip().str.upper()
-nec = df.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
+# --- Trae los cierres de ACRS ----------------------------------------------
+# Un paro AMBOS puede tener hasta 2 filas en ACRS (una por empresa). Cada
+# fila de ACRS es UNA intervención cerrada -> se cruza por id_paro y se
+# EXPANDE: si AMBOS cerraron, el paro aparece 2 veces (una por intervención),
+# que es justo lo que se necesita para medir MTTR/empresa por separado.
+acrs = leer_acrs()
+if acrs.empty or "id_paro" not in acrs.columns:
+    st.warning("Aún no hay paros con intervención registrada (cerrados). "
+               "Cierra ACRs en la vista de Mantenimiento para alimentar este "
+               "tablero.")
+    st.stop()
 
+acrs = acrs.copy()
+acrs["h_int"] = acrs.get("dur_int", "").apply(hhmm_a_horas)
+for col in ("componente", "tipo_intervencion", "empresa"):
+    acrs[col] = acrs.get(col, "").fillna("").astype(str).str.strip()
+    acrs.loc[acrs[col] == "", col] = "Sin dato"
+acrs["empresa"] = acrs["empresa"].str.upper()
+acrs.loc[~acrs["empresa"].isin(["RSI", "STEO"]), "empresa"] = "Sin asignar"
 
-def _atribuir(e, n):
-    if e in ("RSI", "STEO"):
-        return e
-    if n in ("RSI", "STEO"):
-        return n
-    return "Sin asignar"
+# Merge: cada fila resultante = 1 intervención cerrada de 1 empresa.
+cerrados = df.merge(
+    acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
+    on="id_paro", how="inner",
+)
+cerrados["brecha"] = cerrados["h_paro"] - cerrados["h_int"]
+cerrados["brecha_pos"] = cerrados["brecha"].clip(lower=0)
 
-
-df["empresa"] = [_atribuir(e, n) for e, n in zip(emp, nec)]
-
-# --- Solo paros cerrados (con intervención registrada) ---------------------
-cerrados = df[df["h_int"] > 0].copy()
 if cerrados.empty:
     st.warning("Aún no hay paros con intervención registrada (cerrados). "
                "Cierra ACRs en la vista de Mantenimiento para alimentar este "
