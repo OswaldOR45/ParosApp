@@ -103,8 +103,8 @@ df["linea"] = df.get("linea", "").fillna("").astype(str).str.strip()
 # --- Filtros (mismo patrón que el Dashboard) -------------------------------
 f1, f2 = st.columns(2)
 with f1:
-    periodo = st.segmented_control("Periodo", ["Hoy", "Semana", "Mes", "Todo"],
-                                   default="Mes")
+    periodo = st.segmented_control("Periodo", ["Hoy", "Semana", "Este Mes", "Todo"],
+                                   default="Este Mes")
 with f2:
     vista_linea = st.segmented_control("Línea", ["Todas", "Línea 1", "Línea 2"],
                                        default="Todas")
@@ -114,8 +114,8 @@ if periodo == "Hoy":
     df = df[df["fecha"] >= hoy]
 elif periodo == "Semana":
     df = df[df["fecha"] >= hoy - pd.Timedelta(days=7)]
-elif periodo == "Mes":
-    df = df[df["fecha"] >= hoy - pd.Timedelta(days=30)]
+elif periodo == "Este mes":
+    df = df[df["fecha"] >= hoy.replace(day=1)]
 
 if vista_linea in ("Línea 1", "Línea 2"):
     df = df[df["linea"].isin([vista_linea, LINEA_AMBAS])]

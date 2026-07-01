@@ -35,8 +35,8 @@ LINEA_AMBAS = "Línea 1 y 2"
 
 f1, f2 = st.columns(2)
 with f1:
-    periodo = st.segmented_control("Periodo", ["Hoy", "Semana", "Mes", "Todo"],
-                                   default="Semana")
+    periodo = st.segmented_control("Periodo", ["Hoy", "Semana", "Este Mes", "Todo"],
+                                   default="Este Mes")
 with f2:
     vista_linea = st.segmented_control(
         "Línea", ["Todas", "Línea 1", "Línea 2", "Comparar"], default="Todas")
@@ -47,8 +47,8 @@ if periodo == "Hoy":
     df = df[df["fecha"] >= hoy]
 elif periodo == "Semana":
     df = df[df["fecha"] >= hoy - pd.Timedelta(days=7)]
-elif periodo == "Mes":
-    df = df[df["fecha"] >= hoy - pd.Timedelta(days=30)]
+elif periodo == "Este mes":
+    df = df[df["fecha"] >= hoy.replace(day=1)]
 
 # Filtro por línea
 comparar = vista_linea == "Comparar"

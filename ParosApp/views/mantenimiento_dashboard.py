@@ -82,8 +82,8 @@ if cerrados.empty:
 # --- Filtros ---------------------------------------------------------------
 f1, f2 = st.columns(2)
 with f1:
-    periodo = st.segmented_control("Periodo", ["Semana", "Mes", "Trimestre", "Todo"],
-                                   default="Mes")
+    periodo = st.segmented_control("Periodo", ["Semana", "Este Mes", "Trimestre", "Todo"],
+                                   default="Este Mes")
 # Empresa: RSI/STEO ven lo suyo; ADMIN elige.
 if EMPRESA == "ADMIN":
     with f2:
@@ -97,8 +97,8 @@ else:
 hoy = pd.Timestamp.today().normalize()
 if periodo == "Semana":
     cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=7)]
-elif periodo == "Mes":
-    cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=30)]
+elif periodo == "Este mes":
+    cerrados = cerrados[cerrados["fecha"] >= hoy.replace(day=1)]
 elif periodo == "Trimestre":
     cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=90)]
 
