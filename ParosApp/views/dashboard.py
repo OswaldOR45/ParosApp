@@ -49,9 +49,9 @@ elif periodo == "Semana":
     df = df[df["fecha"] >= hoy - pd.Timedelta(days=7)]
 elif periodo == "Este mes":
     df = df[df["fecha"] >= hoy.replace(day=1)]
-    st.write("Fechas disponibles:", df["fecha"].dropna().sort_values().tail(10))
-    st.write("Inicio de mes:", hoy.replace(day=1))
 
+st.write("Fechas disponibles:", df["fecha"].dropna().sort_values().tail(10))
+st.write("Inicio de mes:", hoy.replace(day=1))
 # Filtro por línea
 comparar = vista_linea == "Comparar"
 if vista_linea in ("Línea 1", "Línea 2"):
