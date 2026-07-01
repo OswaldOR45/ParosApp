@@ -97,7 +97,7 @@ else:
 hoy = pd.Timestamp.today().normalize()
 if periodo == "Semana":
     cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=7)]
-elif periodo == "Este mes":
+elif periodo == "Este Mes":
     cerrados = cerrados[cerrados["fecha"] >= hoy.replace(day=1)]
 elif periodo == "Trimestre":
     cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=90)]

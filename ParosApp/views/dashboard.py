@@ -47,7 +47,7 @@ if periodo == "Hoy":
     df = df[df["fecha"] >= hoy]
 elif periodo == "Semana":
     df = df[df["fecha"] >= hoy - pd.Timedelta(days=7)]
-elif periodo == "Este mes":
+elif periodo == "Este Mes":
     df = df[df["fecha"] >= hoy.replace(day=1)]
 
 st.write("Fechas disponibles:", df["fecha"].dropna().sort_values().tail(10))
