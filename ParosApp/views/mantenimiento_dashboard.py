@@ -73,6 +73,10 @@ cerrados = df.merge(
     acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
     on="id_paro", how="inner",
 )
+st.write("IDs en PAROSV2:", df["id_paro"].tail(5).tolist())
+st.write("IDs en ACRS:", acrs["id_paro"].tolist())
+st.write("Cerrados tras merge:", len(cerrados))
+
 cerrados["brecha"] = cerrados["h_paro"] - cerrados["h_int"]
 cerrados["brecha_pos"] = cerrados["brecha"].clip(lower=0)
 
