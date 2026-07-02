@@ -51,6 +51,9 @@ for col in ("equipo", "area", "motivo"):
 # EXPANDE: si AMBOS cerraron, el paro aparece 2 veces (una por intervención),
 # que es justo lo que se necesita para medir MTTR/empresa por separado.
 acrs = leer_acrs()
+st.write("ACRS shape:", acrs.shape)
+st.write("ACRS columns:", acrs.columns.tolist())
+st.write("ACRS head:", acrs.head(3))
 if acrs.empty or "id_paro" not in acrs.columns:
     st.warning("Aún no hay paros con intervención registrada (cerrados). "
                "Cierra ACRs en la vista de Mantenimiento para alimentar este "
