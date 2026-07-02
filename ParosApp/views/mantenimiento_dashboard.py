@@ -51,9 +51,6 @@ for col in ("equipo", "area", "motivo"):
 # EXPANDE: si AMBOS cerraron, el paro aparece 2 veces (una por intervención),
 # que es justo lo que se necesita para medir MTTR/empresa por separado.
 acrs = leer_acrs()
-st.write("ACRS shape:", acrs.shape)
-st.write("ACRS columns:", acrs.columns.tolist())
-st.write("ACRS head:", acrs.head(3))
 if acrs.empty or "id_paro" not in acrs.columns:
     st.warning("Aún no hay paros con intervención registrada (cerrados). "
                "Cierra ACRs en la vista de Mantenimiento para alimentar este "
@@ -73,9 +70,6 @@ cerrados = df.merge(
     acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
     on="id_paro", how="inner",
 )
-st.write("IDs en PAROSV2:", df["id_paro"].tail(5).tolist())
-st.write("IDs en ACRS:", acrs["id_paro"].tolist())
-st.write("Cerrados tras merge:", len(cerrados))
 
 cerrados["brecha"] = cerrados["h_paro"] - cerrados["h_int"]
 cerrados["brecha_pos"] = cerrados["brecha"].clip(lower=0)
