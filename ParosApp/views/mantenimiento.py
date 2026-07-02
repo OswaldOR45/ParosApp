@@ -133,22 +133,58 @@ cat = cargar_catalogos()
 componentes_eq = leer_componentes(equipo_paro) if equipo_paro else []
 
 OPCION_NUEVO = "➕ Agregar componente nuevo…"
-opciones = componentes_eq + [OPCION_NUEVO]
-componente_sel = st.selectbox(
-    "Componente afectado *",
-    opciones,
-    index=None,
-    placeholder="Escribe para buscar o elige de la lista…",
-    help=("Si la pieza no aparece, selecciona "
-          f"\"{OPCION_NUEVO}\" para registrarla. Quedará disponible "
-          "para futuros paros del mismo equipo."),
-)
-componente_nuevo = ""
-if componente_sel == OPCION_NUEVO:
-    componente_nuevo = st.text_input(
-        "Nombre del nuevo componente *",
-        placeholder="Ej.: Empaque de tapa del coater",
-    )
+TIPOS_SIN_COMPONENTE = {"Revisión / Diagnóstico"}
+
+# --- Formulario dinámico de componentes ------------------------------------
+# Se inicializa con 1 componente. El botón agrega más.
+if f"n_comps_{paro_id}" not in st.session_state:
+    st.session_state[f"n_comps_{paro_id}"] = 1
+
+n_comps = st.session_state[f"n_comps_{paro_id}"]
+
+st.markdown("**Componentes intervenidos**")
+componentes_data = []  # lista de (componente_sel, componente_nuevo, tipo_int)
+
+for i in range(n_comps):
+    ca, cb, cc = st.columns([3, 2, 0.5])
+    with ca:
+        comp_sel = st.selectbox(
+            f"Componente {i+1}",
+            [None] + componentes_eq + [OPCION_NUEVO],
+            index=0,
+            placeholder="Busca o elige…",
+            key=f"comp_sel_{paro_id}_{i}",
+            label_visibility="collapsed" if i > 0 else "visible",
+        )
+    with cb:
+        tipo_sel = st.selectbox(
+            f"Tipo {i+1}",
+            [None] + cat["tipos_intervencion"],
+            index=0,
+            placeholder="Tipo de intervención…",
+            key=f"tipo_sel_{paro_id}_{i}",
+            label_visibility="collapsed" if i > 0 else "visible",
+        )
+    with cc:
+        if i > 0:
+            if st.button("🗑️", key=f"del_comp_{paro_id}_{i}",
+                         help="Quitar este componente"):
+                st.session_state[f"n_comps_{paro_id}"] -= 1
+                st.rerun()
+
+    comp_nuevo = ""
+    if comp_sel == OPCION_NUEVO:
+        comp_nuevo = st.text_input(
+            f"Nombre del nuevo componente {i+1} *",
+            placeholder="Ej.: Empaque de tapa del coater",
+            key=f"comp_nuevo_{paro_id}_{i}",
+        )
+
+    componentes_data.append((comp_sel, comp_nuevo, tipo_sel))
+
+if st.button("➕ Agregar componente", key=f"add_comp_{paro_id}"):
+    st.session_state[f"n_comps_{paro_id}"] += 1
+    st.rerun()
 
 # --- Tiempos de la intervención (fuera del form, para mostrar duración viva)
 st.markdown("**Tiempos de la intervención**")
@@ -166,10 +202,6 @@ if hora_ini_int and hora_fin_int:
 
 with st.form("completar"):
     causa_r = st.text_input("Causa raíz *")
-    tipo_int = st.radio("Tipo de intervención *", cat["tipos_intervencion"],
-                        index=None, horizontal=True,
-                        help="Reemplazo reinicia la vida de la pieza; "
-                             "Reparación/Ajuste no.")
     accion = st.text_area("Acción realizada", height=80)
     refaccion = st.text_input("Refacción utilizada")
     orden = st.text_input("Orden de Trabajo (opcional)")
@@ -186,15 +218,27 @@ with st.form("completar"):
 
 if enviar:
     errores = []
-    if componente_sel is None:
-        errores.append("Selecciona un componente.")
-    elif componente_sel == OPCION_NUEVO and not componente_nuevo.strip():
-        errores.append("Escribe el nombre del nuevo componente.")
+
+    # --- Validar componentes -----------------------------------------------
+    comps_validos = []
+    for i, (comp_sel, comp_nuevo, tipo_sel) in enumerate(componentes_data):
+        num = i + 1
+        if not tipo_sel:
+            errores.append(f"Componente {num}: selecciona el tipo de intervención.")
+            continue
+        requiere_comp = tipo_sel not in TIPOS_SIN_COMPONENTE
+        if requiere_comp and comp_sel is None:
+            errores.append(f"Componente {num}: el tipo '{tipo_sel}' requiere "
+                           f"especificar un componente.")
+        elif comp_sel == OPCION_NUEVO and not comp_nuevo.strip():
+            errores.append(f"Componente {num}: escribe el nombre del nuevo componente.")
+        else:
+            comps_validos.append((comp_sel, comp_nuevo, tipo_sel))
+
+    if not comps_validos and not errores:
+        errores.append("Agrega al menos un componente o tipo de intervención.")
     if not causa_r.strip():
         errores.append("La causa raíz es obligatoria para cerrar un ACR.")
-    if not tipo_int:
-        errores.append("Selecciona el tipo de intervención "
-                       "(Reemplazo / Reparación / Ajuste).")
     if not hora_ini_int or not hora_fin_int:
         errores.append("Captura las dos horas de la intervención.")
     elif total_minutos(_date.today(), hora_ini_int, hora_fin_int) <= 0:
@@ -211,38 +255,50 @@ if enviar:
         for e in errores:
             st.error(e)
     else:
-        if componente_sel == OPCION_NUEVO:
-            try:
-                componente_final, era_nuevo = agregar_componente(
-                    equipo_paro, componente_nuevo
-                )
-            except Exception as e:
-                st.error(f"No pude agregar el componente: {e}")
-                st.stop()
-            if not era_nuevo:
-                st.info(f"Ya existía en el catálogo: «{componente_final}». "
-                        "Se usó el nombre existente para no fragmentar el dato.")
-        else:
-            componente_final = componente_sel
+        componentes_finales = []
+        tipos_finales = []
+        for comp_sel, comp_nuevo, tipo_sel in comps_validos:
+            if comp_sel == OPCION_NUEVO:
+                try:
+                    comp_final, era_nuevo = agregar_componente(
+                        equipo_paro, comp_nuevo
+                    )
+                except Exception as e:
+                    st.error(f"No pude agregar el componente: {e}")
+                    st.stop()
+                if not era_nuevo:
+                    st.info(f"Ya existía en el catálogo: «{comp_final}». "
+                            "Se usó el nombre existente.")
+            elif comp_sel is None:
+                comp_final = ""
+            else:
+                comp_final = comp_sel
+
+            componentes_finales.append(comp_final)
+            tipos_finales.append(tipo_sel)
+
+        componente_str = " | ".join(c for c in componentes_finales if c)
+        tipo_str = " | ".join(tipos_finales)
 
         registro_acr = {
-            "id_paro": paro_id,
-            "empresa": empresa_atiende,
-            "causa_raiz": causa_r.strip(),
-            "componente": componente_final,
-            "tipo_intervencion": tipo_int,
-            "accion": accion.strip(),
-            "refaccion": refaccion.strip(),
-            "ini_int": hora_ini_int.strftime("%H:%M"),
-            "fin_int": hora_fin_int.strftime("%H:%M"),
-            "dur_int": dur_int_txt,
-            "firma_produccion": "SÍ",
-            "timestamp": _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "id_paro":           paro_id,
+            "empresa":           empresa_atiende,
+            "causa_raiz":        causa_r.strip(),
+            "componente":        componente_str,
+            "tipo_intervencion": tipo_str,
+            "accion":            accion.strip(),
+            "refaccion":         refaccion.strip(),
+            "ini_int":           hora_ini_int.strftime("%H:%M"),
+            "fin_int":           hora_fin_int.strftime("%H:%M"),
+            "dur_int":           dur_int_txt,
+            "firma_produccion":  "SÍ",
+            "timestamp":         _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         if orden.strip():
             registro_acr["orden_trabajo"] = orden.strip()
         try:
             guardar_acr(registro_acr)
+            st.session_state.pop(f"n_comps_{paro_id}", None)
             st.toast("Paro completado y firmado por producción", icon="✅")
             st.rerun()
         except Exception as e:

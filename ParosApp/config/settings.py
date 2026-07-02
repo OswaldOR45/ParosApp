@@ -74,7 +74,7 @@ NO_PROGRAMADO = "NO PROGRAMADO"
 #   Reparación -> restaura parcialmente; NO reinicia el reloj (sistema reparable).
 #   Ajuste     -> intervención menor; normalmente no cuenta como fin de vida.
 # ---------------------------------------------------------------------------
-TIPOS_INTERVENCION = ["Reemplazo", "Reparación", "Ajuste"]
+TIPOS_INTERVENCION = ["Reemplazo", "Reparación", "Ajuste", "Revisión / Diagnóstico"]
 
 # Orden aprox. por frecuencia (define el orden de los botones en pantalla)
 MOTIVOS = [
