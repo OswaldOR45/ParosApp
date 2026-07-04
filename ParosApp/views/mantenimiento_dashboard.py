@@ -66,7 +66,6 @@ acrs["empresa"] = acrs["empresa"].str.upper()
 acrs.loc[~acrs["empresa"].isin(["RSI", "STEO"]), "empresa"] = "Sin asignar"
 
 # Merge: cada fila resultante = 1 intervención cerrada de 1 empresa.
-st.write("Columnas en ACRS:", acrs.columns.tolist())
 cerrados = df.merge(
     acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
     on="id_paro", how="inner",
@@ -182,6 +181,9 @@ fig3 = px.bar(por_tipo, x="tipo", y="mttr_min", text="n",
               color_discrete_sequence=["#2E86C1"])
 fig3.update_traces(texttemplate="%{text} paros", textposition="outside")
 st.plotly_chart(fig3, use_container_width=True)
+
+st.write("Columnas en cerrados:", cerrados.columns.tolist())
+st.write("Shape cerrados:", cerrados.shape)
 
 # --- 4. MTTR por componente (top 10) ---------------------------------------
 comps_exp = (cerrados[["h_int", "componente"]]
