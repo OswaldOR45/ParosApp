@@ -66,6 +66,7 @@ acrs["empresa"] = acrs["empresa"].str.upper()
 acrs.loc[~acrs["empresa"].isin(["RSI", "STEO"]), "empresa"] = "Sin asignar"
 
 # Merge: cada fila resultante = 1 intervención cerrada de 1 empresa.
+st.write("Columnas en ACRS:", acrs.columns.tolist())
 cerrados = df.merge(
     acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
     on="id_paro", how="inner",
