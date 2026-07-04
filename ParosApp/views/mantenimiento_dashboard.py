@@ -65,17 +65,27 @@ for col in ("componente", "tipo_intervencion", "empresa"):
 acrs["empresa"] = acrs["empresa"].str.upper()
 acrs.loc[~acrs["empresa"].isin(["RSI", "STEO"]), "empresa"] = "Sin asignar"
 
-# Merge: cada fila resultante = 1 intervención cerrada de 1 empresa.
-cerrados = df.merge(
-    acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
-    on="id_paro", how="inner",
-)
-if "tipo_intervencion" not in cerrados.columns:
-    cerrados["tipo_intervencion"] = "Sin dato"
+# Renombra columnas de ACRS antes del merge para evitar conflictos con PAROSV2
+acrs_merge = acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]].rename(columns={
+    "componente": "comp_acr",
+    "tipo_intervencion": "tipo_acr",
+})
+
+cerrados = df.merge(acrs_merge, on="id_paro", how="inner")
+
+if "tipo_acr" not in cerrados.columns:
+    cerrados["tipo_acr"] = "Sin dato"
 else:
-    cerrados["tipo_intervencion"] = (cerrados["tipo_intervencion"]
-                                     .fillna("Sin dato").astype(str).str.strip())
-    cerrados.loc[cerrados["tipo_intervencion"] == "", "tipo_intervencion"] = "Sin dato"
+    cerrados["tipo_acr"] = (cerrados["tipo_acr"]
+                             .fillna("Sin dato").astype(str).str.strip())
+    cerrados.loc[cerrados["tipo_acr"] == "", "tipo_acr"] = "Sin dato"
+
+if "comp_acr" not in cerrados.columns:
+    cerrados["comp_acr"] = "Sin dato"
+else:
+    cerrados["comp_acr"] = (cerrados["comp_acr"]
+                             .fillna("Sin dato").astype(str).str.strip())
+    cerrados.loc[cerrados["comp_acr"] == "", "comp_acr"] = "Sin dato"
 
 cerrados["brecha"] = cerrados["h_paro"] - cerrados["h_int"]
 cerrados["brecha_pos"] = cerrados["brecha"].clip(lower=0)
@@ -166,8 +176,8 @@ if not por_area.empty:
 # --- 3. MTTR por tipo de intervención (tiempos por reparación) -------------
 # tipo_intervencion puede tener múltiples valores separados por " | "
 # Se expande para contar cada tipo por separado.
-tipos_exp = (cerrados[["h_int", "tipo_intervencion"]]
-             .assign(tipo=cerrados["tipo_intervencion"].str.split(r"\s*\|\s*"))
+tipos_exp = (cerrados[["h_int", "tipo_acr"]]
+             .assign(tipo=cerrados["tipo_acr"].str.split(r"\s*\|\s*"))
              .explode("tipo"))
 tipos_exp["tipo"] = tipos_exp["tipo"].str.strip().replace("", "Sin dato")
 
@@ -182,12 +192,9 @@ fig3 = px.bar(por_tipo, x="tipo", y="mttr_min", text="n",
 fig3.update_traces(texttemplate="%{text} paros", textposition="outside")
 st.plotly_chart(fig3, use_container_width=True)
 
-st.write("Columnas en cerrados:", cerrados.columns.tolist())
-st.write("Shape cerrados:", cerrados.shape)
-
 # --- 4. MTTR por componente (top 10) ---------------------------------------
-comps_exp = (cerrados[["h_int", "componente"]]
-             .assign(comp=cerrados["componente"].str.split(r"\s*\|\s*"))
+comps_exp = (cerrados[["h_int", "comp_acr"]]
+             .assign(comp=cerrados["comp_acr"].str.split(r"\s*\|\s*"))
              .explode("comp"))
 comps_exp["comp"] = comps_exp["comp"].str.strip().replace("", "Sin dato")
 comps_exp = comps_exp[comps_exp["comp"] != "Sin dato"]
@@ -257,7 +264,7 @@ tabla["fecha_txt"] = tabla["fecha"].dt.strftime("%Y-%m-%d")
 tabla["paro_min"] = (tabla["h_paro"] * 60).round().astype(int)
 tabla["int_min"] = (tabla["h_int"] * 60).round().astype(int)
 tabla["brecha_min"] = (tabla["brecha"] * 60).round().astype(int)
-cols_tabla = [c for c in ["fecha_txt", "id_paro", "equipo", "componente",
+cols_tabla = [c for c in ["fecha_txt", "id_paro", "equipo", "comp_acr",
                           "motivo", "empresa", "paro_min", "int_min", "brecha_min"]
               if c in tabla.columns]
 st.dataframe(
