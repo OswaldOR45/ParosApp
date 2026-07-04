@@ -70,6 +70,12 @@ cerrados = df.merge(
     acrs[["id_paro", "empresa", "componente", "tipo_intervencion", "h_int"]],
     on="id_paro", how="inner",
 )
+if "tipo_intervencion" not in cerrados.columns:
+    cerrados["tipo_intervencion"] = "Sin dato"
+else:
+    cerrados["tipo_intervencion"] = (cerrados["tipo_intervencion"]
+                                     .fillna("Sin dato").astype(str).str.strip())
+    cerrados.loc[cerrados["tipo_intervencion"] == "", "tipo_intervencion"] = "Sin dato"
 
 cerrados["brecha"] = cerrados["h_paro"] - cerrados["h_int"]
 cerrados["brecha_pos"] = cerrados["brecha"].clip(lower=0)
@@ -158,30 +164,41 @@ if not por_area.empty:
     st.plotly_chart(fig2, use_container_width=True)
 
 # --- 3. MTTR por tipo de intervención (tiempos por reparación) -------------
-por_tipo = (cerrados.groupby("tipo_intervencion")
+# tipo_intervencion puede tener múltiples valores separados por " | "
+# Se expande para contar cada tipo por separado.
+tipos_exp = (cerrados[["h_int", "tipo_intervencion"]]
+             .assign(tipo=cerrados["tipo_intervencion"].str.split(r"\s*\|\s*"))
+             .explode("tipo"))
+tipos_exp["tipo"] = tipos_exp["tipo"].str.strip().replace("", "Sin dato")
+
+por_tipo = (tipos_exp.groupby("tipo")
             .agg(mttr=("h_int", "mean"), n=("h_int", "size")).reset_index()
             .sort_values("mttr", ascending=False))
 por_tipo["mttr_min"] = por_tipo["mttr"] * 60
-fig3 = px.bar(por_tipo, x="tipo_intervencion", y="mttr_min", text="n",
+fig3 = px.bar(por_tipo, x="tipo", y="mttr_min", text="n",
               title="Tiempo de reparación promedio por tipo de intervención",
-              labels={"mttr_min": "Minutos (promedio)",
-                      "tipo_intervencion": ""},
+              labels={"mttr_min": "Minutos (promedio)", "tipo": ""},
               color_discrete_sequence=["#2E86C1"])
 fig3.update_traces(texttemplate="%{text} paros", textposition="outside")
 st.plotly_chart(fig3, use_container_width=True)
 
 # --- 4. MTTR por componente (top 10) ---------------------------------------
-por_comp = (cerrados.groupby("componente")
-            .agg(mttr=("h_int", "mean"), n=("h_int", "size")).reset_index())
-por_comp = por_comp[por_comp["componente"] != "Sin dato"]
-if not por_comp.empty:
+comps_exp = (cerrados[["h_int", "componente"]]
+             .assign(comp=cerrados["componente"].str.split(r"\s*\|\s*"))
+             .explode("comp"))
+comps_exp["comp"] = comps_exp["comp"].str.strip().replace("", "Sin dato")
+comps_exp = comps_exp[comps_exp["comp"] != "Sin dato"]
+
+if not comps_exp.empty:
+    por_comp = (comps_exp.groupby("comp")
+                .agg(mttr=("h_int", "mean"), n=("h_int", "size")).reset_index())
     por_comp["mttr_min"] = por_comp["mttr"] * 60
-    top_comp = por_comp.sort_values("mttr_min", ascending=False).head(10)
+    top_comp = por_comp.sort_values("mttr_min", ascending=False).head(5)
     top_comp = top_comp.sort_values("mttr_min")
-    fig4 = px.bar(top_comp, x="mttr_min", y="componente", orientation="h",
+    fig4 = px.bar(top_comp, x="mttr_min", y="comp", orientation="h",
                   text="n",
-                  title="Tiempo de reparación promedio por componente (top 10)",
-                  labels={"mttr_min": "Minutos (promedio)", "componente": ""},
+                  title="Tiempo de reparación promedio por componente Top 5",
+                  labels={"mttr_min": "Minutos (promedio)", "comp": ""},
                   color_discrete_sequence=["#2E86C1"])
     fig4.update_traces(texttemplate="%{text}×", textposition="outside")
     st.plotly_chart(fig4, use_container_width=True)
