@@ -144,6 +144,15 @@ def cargar_desde_sheets() -> pd.DataFrame:
 def _renombrar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     inverso = {_norm(k): v for k, v in HEADER_TO_FIELD.items()}
     df = df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
+
+    # Excluir tramos hijos (ES_CONTINUACION == SÍ).
+    # El análisis Weibull, MTBF/MTTR y Pareto deben trabajar sobre eventos
+    # únicos. El padre ya acumula la duración total del evento multi-turno;
+    # incluir hijos inflaría las frecuencias de falla y distorsionaría beta/eta.
+    col_ec = next((c for c in df.columns if _norm(c) == _norm("ES_CONTINUACION")), None)
+    if col_ec:
+        df = df[df[col_ec].fillna("").str.strip().str.upper() != "SÍ"].copy()
+
     return df
 
 

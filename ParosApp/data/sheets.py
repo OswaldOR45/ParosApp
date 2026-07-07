@@ -5,6 +5,7 @@ no por posición. Inmune a reordenar columnas o a columnas de sobra.
 """
 import re
 import unicodedata
+from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -107,6 +108,77 @@ def actualizar_paro(id_paro: str, campos: dict):
         if idx:
             ws.update_cell(fila, idx, valor)
     leer_paros.clear()
+
+
+# --- Paros en curso (multi-turno) -----------------------------------------
+
+@st.cache_data(ttl=30)
+def leer_paros_en_curso() -> pd.DataFrame:
+    """
+    Devuelve solo los paros PADRE que están marcados como PARO_EN_CURSO = SÍ.
+    Los hijos (ES_CONTINUACION = SÍ) no aparecen aquí; se cargan aparte
+    con leer_hijos_de_paro().
+    TTL corto (30s) porque el estado cambia frecuentemente.
+    """
+    df = leer_paros()
+    if df.empty:
+        return df
+    # Solo padres en curso (no hijos)
+    en_curso = df.get("paro_en_curso", pd.Series(dtype=str)).fillna("").str.strip().str.upper() == "SÍ"
+    es_hijo  = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper() == "SÍ"
+    return df[en_curso & ~es_hijo].copy()
+
+
+@st.cache_data(ttl=30)
+def leer_hijos_de_paro(id_paro_padre: str) -> pd.DataFrame:
+    """
+    Devuelve todos los tramos hijos de un paro padre, ordenados por timestamp.
+    """
+    df = leer_paros()
+    if df.empty:
+        return df
+    es_hijo = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper() == "SÍ"
+    padre   = df.get("paro_padre", pd.Series(dtype=str)).fillna("").str.strip() == str(id_paro_padre)
+    resultado = df[es_hijo & padre].copy()
+    if "timestamp" in resultado.columns:
+        resultado = resultado.sort_values("timestamp")
+    return resultado
+
+
+def cerrar_tramo_en_curso(id_paro: str, hora_fin_str: str, dur_str: str,
+                           grupo: str, continua: bool, id_hijo: str = "") -> None:
+    """
+    Cierra el tramo actual de un paro en curso y, si continúa, crea el hijo.
+
+    id_paro       : ID del paro padre (siempre).
+    hora_fin_str  : Hora de fin del tramo actual en formato 'HH:MM'.
+    dur_str       : Duración del tramo actual en formato 'H:MM'.
+    grupo         : Grupo (A/B/C) del supervisor que atiende este tramo.
+    continua      : True = crear hijo para el siguiente turno.
+                    False = marcar el evento como completamente cerrado.
+    id_hijo       : Si continúa, el ID pre-generado para el registro hijo.
+    """
+    # 1. Actualizar el padre (o el último hijo) con la hora de fin real y duración
+    #    Nota: para hijos, id_paro es el id_paro del HIJO a actualizar.
+    actualizar_paro(id_paro, {
+        "fin_noprog": hora_fin_str,
+        "dur_noprog": dur_str,
+        "paro_en_curso": "" if not continua else "SÍ",
+    })
+
+    leer_paros_en_curso.clear()
+    leer_hijos_de_paro.clear()
+    leer_paros.clear()
+
+
+def guardar_hijo_en_curso(registro_hijo: dict) -> None:
+    """
+    Guarda un registro hijo (tramo siguiente) heredando datos del padre.
+    El registro_hijo ya viene completo desde la vista.
+    """
+    guardar_paro(registro_hijo)
+    leer_paros_en_curso.clear()
+    leer_hijos_de_paro.clear()
 
 
 # --- Catálogos (usa defaults; lee pestañas cat_* si existen) ---------------

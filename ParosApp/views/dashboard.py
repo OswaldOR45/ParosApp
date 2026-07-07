@@ -18,6 +18,13 @@ if df.empty:
     st.info("Aún no hay datos para mostrar.")
     st.stop()
 
+# Excluir tramos hijos (ES_CONTINUACION == SÍ).
+# Los hijos aportan duración parcial del mismo evento; para no duplicar horas
+# en el dashboard solo se usa el padre, que ya suma la duración total del evento.
+# Nota: los hijos SÍ aparecen en el Pareto de supervisores (vista separada).
+if "es_continuacion" in df.columns:
+    df = df[df["es_continuacion"].fillna("").str.strip().str.upper() != "SÍ"].copy()
+
 # Fecha desde el timestamp; horas desde las duraciones H:MM
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
 df["h_prog"] = df.get("dur_prog", "").apply(hhmm_a_horas)

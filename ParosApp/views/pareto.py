@@ -79,6 +79,12 @@ if df.empty:
     st.info("Aún no hay datos para mostrar.")
     st.stop()
 
+# Excluir tramos hijos: el Pareto de gerencia usa solo el padre para no
+# contar el mismo evento múltiples veces. Los hijos SÍ se incluyen en el
+# Pareto por supervisor (cuando se implemente el filtro por grupo).
+if "es_continuacion" in df.columns:
+    df = df[df["es_continuacion"].fillna("").str.strip().str.upper() != "SÍ"].copy()
+
 # --- Horas (igual que el Dashboard) y fecha --------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
 df["h_prog"] = df.get("dur_prog", "").apply(hhmm_a_horas)

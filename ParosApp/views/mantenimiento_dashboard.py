@@ -35,6 +35,12 @@ if df.empty:
 
 df = df.copy()
 
+# Excluir tramos hijos: el dashboard de mantenimiento trabaja sobre eventos
+# únicos. La duración del paro (h_paro) que se compara con la intervención
+# debe ser la del padre, no los tramos parciales.
+if "es_continuacion" in df.columns:
+    df = df[df["es_continuacion"].fillna("").str.strip().str.upper() != "SÍ"]
+
 # --- Derivados base ---------------------------------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
 # Tiempo de paro reportado por producción (solo una de las dos columnas trae dato).

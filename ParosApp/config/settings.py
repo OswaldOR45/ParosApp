@@ -44,6 +44,10 @@ FIELD_TO_HEADER = {
     "fin_int":            "FIN INTERVENCIÓN",
     "dur_int":            "DURACIÓN INTERVENCIÓN",
     "firma_produccion":   "FIRMA PRODUCCIÓN",
+    # --- Paros multi-turno ---------------------------------------------------
+    "paro_padre":         "PARO_PADRE",
+    "es_continuacion":    "ES_CONTINUACION",
+    "paro_en_curso":      "PARO_EN_CURSO",
 }
 
 # ---------------------------------------------------------------------------
@@ -65,6 +69,18 @@ EQUIPOS = [
 
 PROGRAMADO = "PROGRAMADO"
 NO_PROGRAMADO = "NO PROGRAMADO"
+
+# ---------------------------------------------------------------------------
+# Intervalos de turno fijos (hora_inicio_str, hora_fin_str).
+# El grupo A/B/C rota, pero los bloques horarios son siempre estos.
+# Se usan para calcular el fin automático cuando un paro se extiende
+# al siguiente turno, y para asignar el tramo correcto al siguiente supervisor.
+# ---------------------------------------------------------------------------
+INTERVALOS_TURNO = [
+    ("05:00", "13:00"),
+    ("13:00", "21:00"),
+    ("21:00", "05:00"),   # cruza medianoche
+]
 
 # ---------------------------------------------------------------------------
 # Tipo de intervención de mantenimiento.

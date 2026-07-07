@@ -13,9 +13,10 @@ import pandas as pd
 import streamlit as st
 
 from data.sheets import (leer_paros, leer_acrs, guardar_acr, cargar_catalogos,
-                         leer_componentes, agregar_componente)
+                         leer_componentes, agregar_componente,
+                         leer_hijos_de_paro)
 from utils.auth import requiere_empresa, verificar_password
-from utils.tiempo import duracion_hhmm, total_minutos
+from utils.tiempo import duracion_hhmm, total_minutos, sumar_duraciones_hhmm
 
 # Pide contraseña antes de mostrar o modificar cualquier dato.
 # Cada empresa entra con su contraseña y solo ve los paros que le tocan
@@ -77,6 +78,13 @@ def _falta_cierre(row) -> bool:
 
 mask_visible = acr.isin(VISIBLES)
 df_visible = df[mask_visible].copy()
+
+# Excluir tramos hijos (ES_CONTINUACION == SÍ): mantenimiento solo ve el padre.
+# Los hijos heredan el cierre automáticamente cuando se cierra el padre.
+if "es_continuacion" in df_visible.columns:
+    es_hijo = df_visible["es_continuacion"].fillna("").str.strip().str.upper() == "SÍ"
+    df_visible = df_visible[~es_hijo]
+
 pendientes = df_visible[df_visible.apply(_falta_cierre, axis=1)]
 
 etiqueta = "todas las empresas" if EMPRESA == "ADMIN" else EMPRESA
@@ -109,6 +117,48 @@ equipo_paro = str(fila_paro.get("equipo", "")).strip()
 apoyo_paro = str(fila_paro.get("necesita_acr", "")).strip()
 st.caption(f"Equipo del paro: **{equipo_paro or '—'}** · "
            f"Apoyo solicitado: **{apoyo_paro or '—'}**")
+
+# --- Resumen de tramos multi-turno -----------------------------------------
+# Si el paro tiene hijos (ES_CONTINUACION), se muestran todos los tramos
+# con su duración parcial y la duración total acumulada.
+hijos_mtto = leer_hijos_de_paro(paro_id)
+es_multituno = not hijos_mtto.empty
+
+if es_multituno:
+    todos_tramos_mtto = [fila_paro] + [hijos_mtto.iloc[i] for i in range(len(hijos_mtto))]
+    duraciones_mtto = []
+    resumen_mtto = []
+    for tr in todos_tramos_mtto:
+        dur = str(tr.get("dur_noprog") or tr.get("dur_prog") or "").strip()
+        if dur:
+            duraciones_mtto.append(dur)
+        hi  = str(tr.get("ini_noprog") or tr.get("ini_prog") or "—")
+        hf  = str(tr.get("fin_noprog") or tr.get("fin_prog") or "⏳ en curso")
+        resumen_mtto.append({
+            "Grupo":    tr.get("turno", "—"),
+            "Inicio":   hi,
+            "Fin":      hf,
+            "Duración": dur or "—",
+        })
+
+    dur_total_mtto = sumar_duraciones_hhmm(duraciones_mtto)
+
+    with st.expander(
+        f"🔄 Paro multi-turno · {len(todos_tramos_mtto)} tramos · "
+        f"Duración total: **{dur_total_mtto} h**",
+        expanded=True,
+    ):
+        st.info(
+            "Este paro abarcó más de un turno. El ACR cubre el evento completo. "
+            "La duración que debes considerar es la **duración total** indicada arriba.",
+            icon="ℹ️",
+        )
+        st.dataframe(
+            pd.DataFrame(resumen_mtto),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.metric("Duración total del evento", f"{dur_total_mtto} h")
 
 # Quién ATIENDE de verdad (se guarda como EMPRESA en la fila de ACRS).
 # RSI/STEO: su propia empresa, automático. ADMIN debe indicar cuál cierra
