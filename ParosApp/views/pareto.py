@@ -83,7 +83,7 @@ if df.empty:
 # contar el mismo evento múltiples veces. Los hijos SÍ se incluyen en el
 # Pareto por supervisor (cuando se implemente el filtro por grupo).
 if "es_continuacion" in df.columns:
-    df = df[df["es_continuacion"].fillna("").str.strip().str.upper() != "SÍ"].copy()
+    df = df[~df["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ","SI"})].copy()
 
 # --- Horas (igual que el Dashboard) y fecha --------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
