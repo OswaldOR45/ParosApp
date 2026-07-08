@@ -13,14 +13,14 @@ VISTA 1 — OPERADOR (Registro de paro post-evento)
   Los siguientes supervisores cierran o extienden desde la tabla de paros
   en curso que aparece al inicio de esta vista.
 """
-from datetime import date, datetime, time as dtime
+from datetime import datetime, time as dtime
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from config import settings
 from data.sheets import (cargar_catalogos, guardar_paro, actualizar_paro,
-                          leer_paros_en_curso, leer_hijos_de_paro,
+                          leer_paros, leer_paros_en_curso, leer_hijos_de_paro,
                           cerrar_tramo_en_curso, guardar_hijo_en_curso)
 from utils.tiempo import (duracion_hhmm, total_minutos,
                            fin_de_turno_actual, sumar_duraciones_hhmm)
@@ -76,8 +76,23 @@ v = st.session_state.v
 paros_en_curso = leer_paros_en_curso()
 
 if not paros_en_curso.empty:
-    st.warning("⚠️ Hay paros activos del turno anterior. Revísalos antes de registrar uno nuevo.",
-               icon="🔄")
+    # Descartar filas sin ID (registros corruptos o borrados parcialmente)
+    paros_en_curso = paros_en_curso[
+        paros_en_curso.get("id_paro", "").fillna("").str.strip() != ""
+    ]
+
+if not paros_en_curso.empty:
+    col_titulo, col_btn = st.columns([5, 1])
+    with col_titulo:
+        st.warning("⚠️ Hay paros activos del turno anterior. Revísalos antes de registrar uno nuevo.",
+                   icon="🔄")
+    with col_btn:
+        if st.button("🔄 Actualizar", key="btn_refresh_ec", use_container_width=True,
+                     help="Fuerza la recarga desde Google Sheets"):
+            leer_paros_en_curso.clear()
+            leer_hijos_de_paro.clear()
+            leer_paros.clear()
+            st.rerun()
     st.subheader("Paros en curso")
 
     cols_vista = [c for c in ["id_paro", "turno", "linea", "area", "equipo",
@@ -306,11 +321,15 @@ extiende = st.segmented_control(
 )
 
 if extiende == "Sí, continúa al siguiente turno":
-    _ahora_calc = ahora_mx()
-    fin_turno_auto = fin_de_turno_actual(_ahora_calc)
+    # Usamos hora_inicio (lo que el supervisor capturó) para determinar
+    # a qué intervalo de turno pertenece el paro, no la hora actual del render.
+    # Esto evita el bug donde la página se abre en un turno y se guarda en otro.
+    from datetime import datetime as _dt
+    _dt_inicio = _dt.combine(fecha, hora_inicio)
+    fin_turno_auto = fin_de_turno_actual(_dt_inicio)
     st.info(
-        f"La hora de fin se calculará automáticamente como el límite de tu turno: "
-        f"**{fin_turno_auto.strftime('%H:%M')}**",
+        f"La hora de fin se calculará automáticamente como el límite del turno "
+        f"en que inició el paro: **{fin_turno_auto.strftime('%H:%M')}**",
         icon="🔄",
     )
     hora_fin_efectiva = fin_turno_auto
