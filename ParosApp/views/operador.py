@@ -165,11 +165,19 @@ if not paros_en_curso.empty:
                 step=60,
             )
 
-            # Calcular duración del tramo que cierra (desde el inicio del intervalo actual)
-            fin_turno_ant = fin_de_turno_actual(ahora_ec)   # inicio de este tramo
-            # El inicio de este tramo = fin del turno anterior = inicio del intervalo actual
-            # Usamos la hora de fin del turno anterior como inicio del tramo hijo
-            h_ini_ec, m_ini_ec = map(int, _inicio_intervalo_actual(ahora_ec).strftime("%H:%M").split(":"))
+            # Determinar el inicio del tramo actual:
+            # - Si hay hijos → el inicio es el ini_noprog/ini_prog del último hijo
+            # - Si no hay hijos → el inicio es el ini_noprog/ini_prog del padre mismo
+            if not hijos.empty:
+                ultimo_tramo = hijos.iloc[-1]
+            else:
+                ultimo_tramo = fila_ec
+
+            ini_tramo_str = str(ultimo_tramo.get("ini_noprog") or ultimo_tramo.get("ini_prog") or "").strip()
+            try:
+                h_ini_ec, m_ini_ec = map(int, ini_tramo_str.split(":"))
+            except ValueError:
+                h_ini_ec, m_ini_ec = 0, 0
 
             if hora_fin_ec and grupo_ec:
                 fecha_hoy = ahora_ec.date()
@@ -184,24 +192,34 @@ if not paros_en_curso.empty:
                     if not grupo_ec:
                         st.error("Selecciona tu grupo antes de cerrar.")
                     else:
-                        # Determinar si hay un hijo activo (el último tramo abierto)
-                        ultimo_id = paro_sel
-                        if not hijos.empty:
-                            ultimo_id = hijos.iloc[-1]["id_paro"]
-
                         try:
-                            cerrar_tramo_en_curso(
-                                id_paro=ultimo_id,
-                                hora_fin_str=hora_fin_ec.strftime("%H:%M"),
-                                dur_str=dur_ec,
-                                grupo=grupo_ec,
-                                continua=False,
-                            )
-                            # Limpiar PARO_EN_CURSO también en el padre si el último era hijo
-                            if not hijos.empty:
+                            if hijos.empty:
+                                # Sin hijos: actualizar el padre directamente
+                                cerrar_tramo_en_curso(
+                                    id_paro=paro_sel,
+                                    hora_fin_str=hora_fin_ec.strftime("%H:%M"),
+                                    dur_str=dur_ec,
+                                    grupo=grupo_ec,
+                                    continua=False,
+                                )
+                            else:
+                                # Con hijos: el último hijo ya tiene inicio pero no fin.
+                                # Actualizarlo con fin y duración reales.
+                                ultimo_id = hijos.iloc[-1]["id_paro"]
+                                cerrar_tramo_en_curso(
+                                    id_paro=ultimo_id,
+                                    hora_fin_str=hora_fin_ec.strftime("%H:%M"),
+                                    dur_str=dur_ec,
+                                    grupo=grupo_ec,
+                                    continua=False,
+                                )
+                                # Limpiar PARO_EN_CURSO del padre también
                                 actualizar_paro(paro_sel, {"paro_en_curso": ""})
                             st.toast(f"Paro {paro_sel} cerrado · Duración total: "
                                      f"{sumar_duraciones_hhmm(duraciones + [dur_ec])} h", icon="✅")
+                            leer_paros_en_curso.clear()
+                            leer_hijos_de_paro.clear()
+                            leer_paros.clear()
                             st.rerun()
                         except Exception as e:
                             st.error(f"Error al cerrar el paro: {e}")
@@ -210,8 +228,23 @@ if not paros_en_curso.empty:
             st.caption("Se registrará el fin de tu turno automáticamente y "
                        "el paro quedará activo para el siguiente grupo.")
 
-            fin_turno = fin_de_turno_actual(ahora_ec)
-            ini_intervalo = _inicio_intervalo_actual(ahora_ec)
+            # El fin de turno se calcula desde el inicio real del tramo activo,
+            # no desde ahora_ec, para evitar el bug de cambio de turno al renderizar.
+            if not hijos.empty:
+                ultimo_tramo_cont = hijos.iloc[-1]
+            else:
+                ultimo_tramo_cont = fila_ec
+
+            ini_tramo_cont_str = str(ultimo_tramo_cont.get("ini_noprog") or
+                                     ultimo_tramo_cont.get("ini_prog") or "").strip()
+            try:
+                _h, _m = map(int, ini_tramo_cont_str.split(":"))
+                ini_intervalo = dtime(_h, _m)
+            except ValueError:
+                ini_intervalo = _inicio_intervalo_actual(ahora_ec)
+
+            from datetime import datetime as _dt2
+            fin_turno = fin_de_turno_actual(_dt2.combine(ahora_ec.date(), ini_intervalo))
 
             fecha_hoy = ahora_ec.date()
             dur_ec = duracion_hhmm(fecha_hoy, ini_intervalo, fin_turno)
