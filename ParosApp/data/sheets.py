@@ -5,7 +5,6 @@ no por posición. Inmune a reordenar columnas o a columnas de sobra.
 """
 import re
 import unicodedata
-from datetime import datetime, timedelta
 
 import streamlit as st
 import pandas as pd
@@ -112,7 +111,7 @@ def actualizar_paro(id_paro: str, campos: dict):
 
 # --- Paros en curso (multi-turno) -----------------------------------------
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=10)
 def leer_paros_en_curso() -> pd.DataFrame:
     """
     Devuelve solo los paros PADRE que están marcados como PARO_EN_CURSO = SÍ.
@@ -124,8 +123,8 @@ def leer_paros_en_curso() -> pd.DataFrame:
     if df.empty:
         return df
     # Solo padres en curso (no hijos)
-    en_curso = df.get("paro_en_curso", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ","SI"})
-    es_hijo  = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ","SI"})
+    en_curso = df.get("paro_en_curso", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
+    es_hijo  = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
     return df[en_curso & ~es_hijo].copy()
 
 
@@ -137,7 +136,7 @@ def leer_hijos_de_paro(id_paro_padre: str) -> pd.DataFrame:
     df = leer_paros()
     if df.empty:
         return df
-    es_hijo = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ","SI"})
+    es_hijo = df.get("es_continuacion", pd.Series(dtype=str)).fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
     padre   = df.get("paro_padre", pd.Series(dtype=str)).fillna("").str.strip() == str(id_paro_padre)
     resultado = df[es_hijo & padre].copy()
     if "timestamp" in resultado.columns:

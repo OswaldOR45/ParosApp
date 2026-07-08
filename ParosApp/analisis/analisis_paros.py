@@ -151,7 +151,8 @@ def _renombrar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     # incluir hijos inflaría las frecuencias de falla y distorsionaría beta/eta.
     col_ec = next((c for c in df.columns if _norm(c) == _norm("ES_CONTINUACION")), None)
     if col_ec:
-        df = df[~df[col_ec].fillna("").str.strip().str.upper().isin({"SÍ","SI"})].copy()
+        _ec = df[col_ec].fillna("").str.strip().str.upper()
+        df = df[~_ec.isin({"SÍ", "SI"})].copy()
 
     return df
 

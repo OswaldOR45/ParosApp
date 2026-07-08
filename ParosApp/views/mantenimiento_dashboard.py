@@ -39,7 +39,8 @@ df = df.copy()
 # únicos. La duración del paro (h_paro) que se compara con la intervención
 # debe ser la del padre, no los tramos parciales.
 if "es_continuacion" in df.columns:
-    df = df[~df["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ","SI"})]
+    _ec = df["es_continuacion"].fillna("").str.strip().str.upper()
+    df = df[~_ec.isin({"SÍ", "SI"})]
 
 # --- Derivados base ---------------------------------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")

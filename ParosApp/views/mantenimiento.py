@@ -79,10 +79,12 @@ def _falta_cierre(row) -> bool:
 mask_visible = acr.isin(VISIBLES)
 df_visible = df[mask_visible].copy()
 
-# Excluir tramos hijos (ES_CONTINUACION == SÍ): mantenimiento solo ve el padre.
+# Excluir tramos hijos (ES_CONTINUACION == SÍ / SI): mantenimiento solo ve el padre.
 # Los hijos heredan el cierre automáticamente cuando se cierra el padre.
+# Se compara contra ambas variantes porque Google Sheets a veces elimina el acento.
 if "es_continuacion" in df_visible.columns:
-    es_hijo = df_visible["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ","SI"})
+    _ec = df_visible["es_continuacion"].fillna("").str.strip().str.upper()
+    es_hijo = _ec.isin({"SÍ", "SI"})
     df_visible = df_visible[~es_hijo]
 
 pendientes = df_visible[df_visible.apply(_falta_cierre, axis=1)]
