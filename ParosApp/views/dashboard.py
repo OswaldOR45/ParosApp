@@ -23,7 +23,7 @@ if df.empty:
 # en el dashboard solo se usa el padre, que ya suma la duración total del evento.
 # Nota: los hijos SÍ aparecen en el Pareto de supervisores (vista separada).
 if "es_continuacion" in df.columns:
-    df = df[df["es_continuacion"].fillna("").str.strip().str.upper() != "SÍ"].copy()
+    df = df[~df["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ","SI"})].copy()
 
 # Fecha desde el timestamp; horas desde las duraciones H:MM
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
