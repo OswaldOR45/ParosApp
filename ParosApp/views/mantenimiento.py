@@ -83,9 +83,14 @@ df_visible = df[mask_visible].copy()
 # Los hijos heredan el cierre automáticamente cuando se cierra el padre.
 # Se compara contra ambas variantes porque Google Sheets a veces elimina el acento.
 if "es_continuacion" in df_visible.columns:
-    _ec = df_visible["es_continuacion"].fillna("").str.strip().str.upper()
-    es_hijo = _ec.isin({"SÍ", "SI"})
+    es_hijo = df_visible["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
     df_visible = df_visible[~es_hijo]
+
+# Excluir paros aún activos: no tienen hora de fin real todavía.
+# Mantenimiento solo ve paros completamente cerrados.
+if "paro_en_curso" in df_visible.columns:
+    en_curso = df_visible["paro_en_curso"].fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
+    df_visible = df_visible[~en_curso]
 
 pendientes = df_visible[df_visible.apply(_falta_cierre, axis=1)]
 
