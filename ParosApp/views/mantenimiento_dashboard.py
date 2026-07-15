@@ -48,6 +48,23 @@ df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
 df["h_paro"] = (df.get("dur_prog", "").apply(hhmm_a_horas)
                 + df.get("dur_noprog", "").apply(hhmm_a_horas))
 
+# Para paros multi-turno: sumar la duración de los hijos al padre.
+# Sin esto el h_paro del padre es solo su tramo parcial, generando brechas negativas.
+df_todos = leer_paros()  # todos los registros incluyendo hijos
+if not df_todos.empty and "paro_padre" in df_todos.columns and "es_continuacion" in df_todos.columns:
+    _ec = df_todos["es_continuacion"].fillna("").str.strip().str.upper()
+    hijos_all = df_todos[_ec.isin({"SÍ", "SI"})].copy()
+    if not hijos_all.empty:
+        hijos_all["h_hijo"] = (hijos_all.get("dur_prog", "").apply(hhmm_a_horas)
+                               + hijos_all.get("dur_noprog", "").apply(hhmm_a_horas))
+        suma_hijos = (hijos_all.groupby("paro_padre")["h_hijo"]
+                      .sum().reset_index()
+                      .rename(columns={"paro_padre": "id_paro", "h_hijo": "h_hijos"}))
+        df = df.merge(suma_hijos, on="id_paro", how="left")
+        df["h_hijos"] = df["h_hijos"].fillna(0)
+        df["h_paro"] = df["h_paro"] + df["h_hijos"]
+        df = df.drop(columns=["h_hijos"])
+
 for col in ("equipo", "area", "motivo"):
     df[col] = df.get(col, "").fillna("").astype(str).str.strip()
     df.loc[df[col] == "", col] = "Sin dato"

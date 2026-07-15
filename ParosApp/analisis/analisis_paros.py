@@ -145,11 +145,58 @@ def _renombrar_columnas(df: pd.DataFrame) -> pd.DataFrame:
     inverso = {_norm(k): v for k, v in HEADER_TO_FIELD.items()}
     df = df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
 
-    # Excluir tramos hijos (ES_CONTINUACION == SÍ).
-    # El análisis Weibull, MTBF/MTTR y Pareto deben trabajar sobre eventos
-    # únicos. El padre ya acumula la duración total del evento multi-turno;
-    # incluir hijos inflaría las frecuencias de falla y distorsionaría beta/eta.
     col_ec = next((c for c in df.columns if _norm(c) == _norm("ES_CONTINUACION")), None)
+    col_pp = next((c for c in df.columns if _norm(c) == _norm("PARO_PADRE")), None)
+
+    # Antes de filtrar hijos: sumar su duración al padre para que el análisis
+    # Weibull use la duración total del evento, no solo el tramo del padre.
+    if col_ec and col_pp and "dur_noprog" in df.columns or "dur_prog" in df.columns:
+        _ec_vals = df[col_ec].fillna("").str.strip().str.upper()
+        _hijos   = df[_ec_vals.isin({"SÍ", "SI"})].copy()
+        if not _hijos.empty and col_pp in _hijos.columns:
+            def _to_min(val):
+                s = str(val).strip()
+                if not s or ":" not in s: return 0.0
+                parts = s.split(":")
+                try:
+                    return int(parts[0]) * 60 + int(parts[1])
+                except ValueError:
+                    return 0.0
+            _hijos["_min"] = (_hijos.get("dur_noprog", pd.Series(dtype=str)).apply(_to_min)
+                              + _hijos.get("dur_prog", pd.Series(dtype=str)).apply(_to_min))
+            _suma = (_hijos.groupby(col_pp)["_min"]
+                     .sum().reset_index()
+                     .rename(columns={col_pp: "id_paro", "_min": "_min_hijos"}))
+            if "id_paro" in df.columns:
+                df = df.merge(_suma, on="id_paro", how="left")
+                df["_min_hijos"] = df["_min_hijos"].fillna(0)
+
+                def _add_hijos(row):
+                    if _ec_vals.loc[row.name] in {"SÍ", "SI"}:
+                        return row.get("dur_noprog", "") or row.get("dur_prog", "")
+                    # Sumar minutos de hijos a la duración del padre
+                    min_hijo = row.get("_min_hijos", 0)
+                    if min_hijo == 0:
+                        return row.get("dur_noprog", "") or row.get("dur_prog", "")
+                    base = str(row.get("dur_noprog", "") or row.get("dur_prog", "") or "0:00").strip()
+                    base_min = _to_min(base)
+                    total = int(base_min + min_hijo)
+                    return f"{total // 60}:{total % 60:02d}"
+
+                # Solo actualizar dur en padres (no en hijos)
+                es_padre = ~_ec_vals.isin({"SÍ", "SI"})
+                for col_dur in ["dur_noprog", "dur_prog"]:
+                    if col_dur in df.columns:
+                        df.loc[es_padre & (df["_min_hijos"] > 0), col_dur] = \
+                            df.loc[es_padre & (df["_min_hijos"] > 0)].apply(
+                                lambda r: f"{int((_to_min(str(r.get(col_dur,'') or '0:00')) + r['_min_hijos']) // 60)}"
+                                          f":{int((_to_min(str(r.get(col_dur,'') or '0:00')) + r['_min_hijos']) % 60):02d}",
+                                axis=1
+                            )
+                df = df.drop(columns=["_min_hijos"])
+
+    # Excluir tramos hijos: el análisis Weibull, MTBF/MTTR y Pareto deben
+    # trabajar sobre eventos únicos.
     if col_ec:
         _ec = df[col_ec].fillna("").str.strip().str.upper()
         df = df[~_ec.isin({"SÍ", "SI"})].copy()
