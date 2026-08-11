@@ -57,14 +57,15 @@ TURNOS = ["A", "B", "C"]
 LINEAS = ["Línea 1", "Línea 2", "Línea 1 y 2"]
 
 AREAS = [
-    "EXTRUSIÓN", "DOSIFICACIÓN", "SERVICIOS/ENERGÍA/AGUA", "EMPAQUE", "GENERAL",
+    "EXTRUSIÓN", "DOSIFICACIÓN", "SERVICIOS/ENERGÍA/AGUA/GAS/COMPRESOR", "EMPAQUE", "GENERAL",
     "ENFRIADOR", "MOLIENDA", "PLANTA", "CALDERAS", "SECADOR", "COATER",
     "TRANSPORTE NEUMATICO", "ZARANDA", "RASTRA", "LIMPIADORES",
 ]
 
 EQUIPOS = [
     "Extrusor", "Secador", "Coater", "Enfriador", "Molienda",
-    "Dosificación", "Dosificación / Envasado", "Envasadora", "General",
+    "Dosificación", "Envasadoro", "General", "Calderas", "Compresor",
+    "Volcador", "Báscula" , "Zaranda", "Transportadores", "Limpiador",
 ]
 
 PROGRAMADO = "PROGRAMADO"
@@ -98,9 +99,10 @@ MOTIVOS = [
     ("Ajuste de Navajas",        NO_PROGRAMADO, "Paro rápido no planificado para calibrar o corregir la alineación/filo de las navajas debido a un mal corte."),
     ("Taponamiento Ciclón",      NO_PROGRAMADO, "Paro por obstrucción física de material en el flujo del ciclón o transporte neumático que requiere destape manual."),
     ("MTTTO Correctivo",         NO_PROGRAMADO, "Paro por falla mecánica o eléctrica imprevista de un componente del equipo que requiere reparación, cambio de refacción o soldadura para volver a funcionar."),
-    ("Tolvas Llenas",            NO_PROGRAMADO, "El equipo se detiene por seguridad porque el proceso posterior está saturado y no hay capacidad para envasar el producto."),
+    ("Tolvas Llenas",            NO_PROGRAMADO, "El equipo se detiene por seguridad porque el proceso posterior está saturado y no hay capacidad para envasar o almacenar el producto."),
     ("Harina No Conforme",       NO_PROGRAMADO, "La harina que se está extruyendo no cumple con las características de calidad esperadas."),
-    ("Falta de Harina",          NO_PROGRAMADO, "Línea detenida por desabasto de materia prima en los silos de alimentación o retraso en molienda."),
+    ("Falta de Materia Prima",   NO_PROGRAMADO, "Línea detenida por desabasto de materia prima en los silos de alimentación"),
+    ("Falta de Harina en tolvas de Extrusión",   NO_PROGRAMADO, "Línea detenida por retraso en molienda o bajo rate en Molienda"),
     ("Error Operativo",          NO_PROGRAMADO, "Paro causado por una mala maniobra, set-up incorrecto, omisión de un procedimiento estándar o descuido humano."),
     ("Alta Carga",               NO_PROGRAMADO, "Sobrecarga de motor / Amperaje Elevado"),
     ("Limpieza de Equipos",      PROGRAMADO, "Paro agendado por plan de higiene o inocuidad, que no se debe a una falla interna."),
@@ -110,9 +112,12 @@ MOTIVOS = [
     ("MTTTO Preventivo",         PROGRAMADO, "Paro por calendario para rutina de lubricación, inspección, cambio de piezas por desgaste planeado o calibración."),
     ("Falta de Personal",        NO_PROGRAMADO, "La máquina está disponible para operar, pero no hay operadores o cuadrilla suficiente para arrancar."),
     ("Error de Programación",    NO_PROGRAMADO, "Paro debido a un error en el plan de producción."),
-    ("Intervención Técnico",     NO_PROGRAMADO, "Paro donde se necesita la asistencia de un técnico externo para el correcto funcionamiento de la máquina."),
+    ("Falla de montacargas",     NO_PROGRAMADO, "Paro debido a un fallo en el montacargas"),
+    ("Falta de tarimas",         NO_PROGRAMADO, "Falta de tarimas para almacenar"),
+    ("Intervención Técnica",     NO_PROGRAMADO, "Paro donde se necesita la asistencia de un técnico externo para el correcto funcionamiento de la máquina."),
     ("Paro Planta Programado",   PROGRAMADO, "Paro total de operaciones planificado (ej. días festivos, mantenimiento mayor anual, fin de semana sin producción)."),
-    ("Arranque Planta Programado",  PROGRAMADO, "Tiempo estándar asignado para la puesta en marcha y estabilización de las áreas antes de producir."),
+    ("Arranque Planta Programado", PROGRAMADO, "Tiempo estándar asignado para la puesta en marcha y estabilización de las áreas antes después de un paro planificado"),
+    ("Arranque de Línea ",       PROGRAMADO, "Tiempo estándar asignado para la puesta en marcha y estabilización antes de volver a producir."),
     ("Proyectos",                PROGRAMADO, "Paro asignado a ingeniería o mejora continua para instalar equipos nuevos, hacer pruebas o modificaciones de línea."),
     ("Inventario",               PROGRAMADO, "Paro total o parcial programado exclusivamente para el conteo de materiales o producto terminado."),
 ]
