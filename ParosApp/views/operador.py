@@ -257,20 +257,25 @@ if not paros_en_curso.empty:
             st.caption("Se registrará el fin de tu turno automáticamente y "
                        "el paro quedará activo para el siguiente grupo.")
 
-            # El fin de turno se calcula desde el inicio real del tramo activo,
-            # no desde ahora_ec, para evitar el bug de cambio de turno al renderizar.
+            # El inicio del hijo es siempre el FIN del último tramo activo,
+            # no el inicio de ese tramo. Esto evita que el hijo herede el
+            # ini_prog/ini_noprog del padre (ej: 11:30) en lugar de usar
+            # el fin del padre como su propio inicio (ej: 13:00).
             if not hijos.empty:
                 ultimo_tramo_cont = hijos.iloc[-1]
             else:
                 ultimo_tramo_cont = fila_ec
 
-            ini_tramo_cont_str = str(ultimo_tramo_cont.get("ini_noprog") or
-                                     ultimo_tramo_cont.get("ini_prog") or "").strip()
+            fin_ultimo_str = str(
+                ultimo_tramo_cont.get("fin_noprog") or
+                ultimo_tramo_cont.get("fin_prog") or ""
+            ).strip()
+
             try:
-                _h, _m = map(int, ini_tramo_cont_str.split(":"))
+                _h, _m = map(int, fin_ultimo_str.split(":"))
                 ini_intervalo = dtime(_h, _m)
             except ValueError:
-                ini_intervalo = _inicio_intervalo_actual(ahora_ec)
+                ini_intervalo = fin_de_turno_actual(ahora_ec)
 
             fin_turno = fin_de_turno_actual(datetime.combine(ahora_ec.date(), ini_intervalo))
             fecha_hoy = ahora_ec.date()
