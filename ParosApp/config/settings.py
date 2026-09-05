@@ -64,7 +64,7 @@ AREAS = [
 
 EQUIPOS = [
     "Extrusor", "Secador", "Coater", "Enfriador", "Molienda",
-    "Dosificación", "Envasadoro", "General", "Calderas", "Compresor",
+    "Dosificación", "Envasado", "General", "Calderas", "Compresor",
     "Volcador", "Báscula" , "Zaranda", "Transportadores", "Limpiador",
 ]
 
