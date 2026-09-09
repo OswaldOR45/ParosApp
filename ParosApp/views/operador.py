@@ -166,16 +166,20 @@ if not paros_en_curso.empty:
             )
 
             # Inicio del tramo actual:
-            # - Con hijos → ini del último hijo (ya fue creado al marcar "Continúa")
-            # - Sin hijos → ini del padre (el siguiente supervisor cierra el padre)
+            # - Con hijos → ini del último hijo (ya fue creado al marcar "Continúa",
+            #   ese hijo YA tiene su propio ini correcto y le falta el fin)
+            # - Sin hijos → FIN del padre (el padre ya tiene ini+fin completos;
+            #   este nuevo tramo arranca donde el padre terminó, no donde empezó)
             if not hijos.empty:
                 ultimo_tramo = hijos.iloc[-1]
+                ini_tramo_str = str(
+                    ultimo_tramo.get("ini_noprog") or ultimo_tramo.get("ini_prog") or ""
+                ).strip()
             else:
                 ultimo_tramo = fila_ec
-
-            ini_tramo_str = str(
-                ultimo_tramo.get("ini_noprog") or ultimo_tramo.get("ini_prog") or ""
-            ).strip()
+                ini_tramo_str = str(
+                    ultimo_tramo.get("fin_noprog") or ultimo_tramo.get("fin_prog") or ""
+                ).strip()
             try:
                 h_ini_ec, m_ini_ec = map(int, ini_tramo_str.split(":"))
             except ValueError:
