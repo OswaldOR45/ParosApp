@@ -25,7 +25,7 @@ DOS líneas del área, porque detiene ambas a la vez.
 """
 import re
 import unicodedata
-from datetime import time as dtime, date as ddate
+from datetime import datetime as ddatetime, time as dtime, date as ddate, timedelta
 
 import pandas as pd
 from plotly.subplots import make_subplots
@@ -37,7 +37,7 @@ from utils.tiempo import hhmm_a_horas
 
 MIN_TURNO = 480  # 8 horas
 LINEA_AMBAS = "Línea 1 y 2"
-TURNOS_HORARIO = ["Matutino", "Vespertino", "Nocturno"]  # orden = INTERVALOS_TURNO
+GRUPOS = ["A", "B", "C"]  # el TND se calcula por grupo, no por turno horario
 
 COLOR_BARRA = "#2563EB"
 COLOR_LINEA = "#DC2626"
@@ -84,9 +84,20 @@ def _to_min(valor) -> float:
         return 0.0
 
 
-def _turno_horario(hora_str) -> str | None:
-    """Dado 'HH:MM', devuelve 'Matutino' / 'Vespertino' / 'Nocturno' según
-    settings.INTERVALOS_TURNO, o None si no se puede interpretar."""
+def _fecha_turno(ts, hora_str):
+    """
+    Fecha en que ARRANCÓ el turno al que pertenece el paro.
+
+    El turno nocturno (21:00-05:00) cruza la medianoche: un paro a las 03:00
+    pertenece al turno que empezó la noche anterior. Sin este ajuste, el TND
+    de un grupo nocturno mezclaría dos turnos en un mismo día calendario.
+
+    ts       : momento de REGISTRO (Timestamp). Sirve para saber si el paro
+               arrancó el día anterior (ej. paro 23:57 registrado a las 02:32).
+    hora_str : hora de inicio del paro 'H:MM'.
+    """
+    if pd.isna(ts):
+        return None
     s = str(hora_str).strip()
     if not s or ":" not in s:
         return None
@@ -94,18 +105,19 @@ def _turno_horario(hora_str) -> str | None:
         h, m = map(int, s.split(":")[:2])
     except ValueError:
         return None
+
     t = dtime(h, m)
-    for label, (ini_str, fin_str) in zip(TURNOS_HORARIO, settings.INTERVALOS_TURNO):
-        h_ini, m_ini = map(int, ini_str.split(":"))
-        h_fin, m_fin = map(int, fin_str.split(":"))
-        t_ini, t_fin = dtime(h_ini, m_ini), dtime(h_fin, m_fin)
-        if t_ini < t_fin:
-            if t_ini <= t < t_fin:
-                return label
-        else:  # cruza medianoche (Nocturno)
-            if t >= t_ini or t < t_fin:
-                return label
-    return None
+    inicio = ddatetime.combine(ts.date(), t)
+    # Un paro no puede arrancar después de registrarse: si "cae en el futuro"
+    # (con 1 h de tolerancia), en realidad arrancó el día anterior.
+    if inicio > ts.to_pydatetime() + timedelta(hours=1):
+        inicio -= timedelta(days=1)
+
+    fecha = inicio.date()
+    h_ini, m_ini = map(int, settings.INTERVALOS_TURNO[0][0].split(":"))
+    if t < dtime(h_ini, m_ini):      # madrugada = turno nocturno del día anterior
+        fecha -= timedelta(days=1)
+    return fecha
 
 
 def pareto_fig(serie_horas: pd.Series, eje_label: str):
@@ -178,12 +190,14 @@ def _area_key(valor_area: str) -> str | None:
 
 
 def calcular_tnd(df_prog: pd.DataFrame, area_key: str,
-                  fecha_ini: ddate, fecha_fin: ddate) -> pd.DataFrame:
+                  fecha_ini: ddate, fecha_fin: ddate,
+                  grupos: list | None = None) -> pd.DataFrame:
     """
     df_prog: paros PROGRAMADOS ya filtrados a esta área, con columnas
-             'fecha_dia' (date), 'turno_horario', 'linea', 'min_prog'.
-    Devuelve una tabla con TND por (Fecha, Línea, Turno).
+             'fecha_turno' (date), 'turno' (grupo A/B/C), 'linea', 'min_prog'.
+    Devuelve una tabla con TND por (Fecha de turno, Línea, Grupo).
     """
+    grupos = grupos or GRUPOS
     lineas_area = AREAS_OBJETIVO[area_key]["lineas"]
     dias = pd.date_range(fecha_ini, fecha_fin, freq="D")
 
@@ -192,10 +206,10 @@ def calcular_tnd(df_prog: pd.DataFrame, area_key: str,
         dia_d = dia.date()
         for linea in lineas_area:
             mask_linea = df_prog["linea"].isin([linea, LINEA_AMBAS])
-            for turno_lbl in TURNOS_HORARIO:
+            for grupo in grupos:
                 mask = (
-                    (df_prog["fecha_dia"] == dia_d)
-                    & (df_prog["turno_horario"] == turno_lbl)
+                    (df_prog["fecha_turno"] == dia_d)
+                    & (df_prog["turno"] == grupo)
                     & mask_linea
                 )
                 min_perdidos = df_prog.loc[mask, "min_prog"].sum()
@@ -203,7 +217,7 @@ def calcular_tnd(df_prog: pd.DataFrame, area_key: str,
                 filas.append({
                     "Fecha": dia_d,
                     "Línea": linea,
-                    "Turno": turno_lbl,
+                    "Grupo": grupo,
                     "Min. programados": round(min_perdidos, 0),
                     "TND (min)": round(tnd_min, 0),
                     "TND (h)": round(tnd_min / 60, 2),
@@ -212,29 +226,30 @@ def calcular_tnd(df_prog: pd.DataFrame, area_key: str,
 
 
 def mostrar_tnd(df_prog_mes: pd.DataFrame, area_key: str,
-                 fecha_ini: ddate, fecha_fin: ddate, key_prefix: str):
-    """Renderiza el bloque de TND para un área: resumen + detalle expandible."""
+                 fecha_ini: ddate, fecha_fin: ddate, key_prefix: str,
+                 grupos: list | None = None):
+    """Renderiza el bloque de TND para un área: resumen por grupo + detalle."""
     label = AREAS_OBJETIVO[area_key]["label"]
-    tabla = calcular_tnd(df_prog_mes, area_key, fecha_ini, fecha_fin)
+    tabla = calcular_tnd(df_prog_mes, area_key, fecha_ini, fecha_fin, grupos)
 
     if tabla.empty:
         st.info(f"Sin datos de TND para {label} en este periodo.")
         return
 
-    resumen = (tabla.groupby(["Línea", "Turno"])
+    resumen = (tabla.groupby(["Grupo", "Línea"])
                .agg(**{"TND promedio (h)": ("TND (h)", "mean"),
-                       "TND total (h)": ("TND (h)", "sum"),
+                       "TND total del mes (h)": ("TND (h)", "sum"),
                        "Días": ("Fecha", "nunique")})
                .reset_index())
     resumen["TND promedio (h)"] = resumen["TND promedio (h)"].round(2)
-    resumen["TND total (h)"] = resumen["TND total (h)"].round(1)
+    resumen["TND total del mes (h)"] = resumen["TND total del mes (h)"].round(1)
 
     st.markdown(f"**TND — {label}**")
     st.dataframe(resumen, use_container_width=True, hide_index=True)
 
     with st.expander(f"Ver detalle día por día · {label}"):
         st.dataframe(
-            tabla.sort_values(["Fecha", "Línea", "Turno"]),
+            tabla.sort_values(["Grupo", "Línea", "Fecha"]),
             use_container_width=True, hide_index=True,
         )
 
@@ -268,13 +283,15 @@ tipo_por_motivo = cargar_catalogos().get("tipo_por_motivo", {})
 tipo_norm = {_norm(k): v for k, v in tipo_por_motivo.items()}
 df_raw["tipo"] = df_raw["motivo"].map(lambda m: tipo_norm.get(_norm(m), settings.NO_PROGRAMADO))
 
-# Turno horario (Matutino/Vespertino/Nocturno) a partir de la hora de inicio.
+# Fecha del turno (el nocturno de madrugada cuenta como el día que arrancó).
 # Los paros PROGRAMADOS usan ini_prog; los NO PROGRAMADOS, ini_noprog.
 df_raw["hora_ini_efectiva"] = df_raw.get("ini_prog", "").where(
     df_raw.get("ini_prog", "").astype(str).str.strip() != "",
     df_raw.get("ini_noprog", ""),
 )
-df_raw["turno_horario"] = df_raw["hora_ini_efectiva"].apply(_turno_horario)
+df_raw["fecha_turno"] = df_raw.apply(
+    lambda r: _fecha_turno(r["fecha_ts"], r["hora_ini_efectiva"]), axis=1
+)
 
 # Solo nos interesan los registros de las 3 áreas objetivo para esta vista
 df_areas = df_raw[df_raw["area_key"].notna()].copy()
@@ -349,13 +366,14 @@ with tab_sup:
     st.divider()
     st.subheader("TND del periodo")
 
-    # Paros PROGRAMADOS del mes, dentro de las áreas objetivo (sin filtro
-    # de grupo: el TND es de la línea, no del supervisor específico).
-    df_prog_mes = df_areas[
-        (df_areas["fecha_dia"] >= ini_s) & (df_areas["fecha_dia"] <= fin_s)
-        & (df_areas["tipo"] == settings.PROGRAMADO)
-        & (df_areas["turno_horario"].notna())
+    # Paros PROGRAMADOS del mes, por GRUPO. Respeta el filtro de grupo de
+    # arriba: si el supervisor eligió su grupo, solo ve el TND de ese grupo.
+    _base_tnd = df_areas[df_areas["fecha_turno"].notna()]
+    df_prog_mes = _base_tnd[
+        (_base_tnd["fecha_turno"] >= ini_s) & (_base_tnd["fecha_turno"] <= fin_s)
+        & (_base_tnd["tipo"] == settings.PROGRAMADO)
     ]
+    grupos_tnd = GRUPOS if grupo_sel in (None, "Todos") else [grupo_sel]
 
     areas_a_mostrar = (
         [label_to_key[area_sel_sup]] if area_sel_sup != "Todas"
@@ -363,7 +381,8 @@ with tab_sup:
     )
     for ak in areas_a_mostrar:
         df_prog_area = df_prog_mes[df_prog_mes["area_key"] == ak]
-        mostrar_tnd(df_prog_area, ak, ini_s, fin_s, key_prefix=f"sup_{ak}")
+        mostrar_tnd(df_prog_area, ak, ini_s, fin_s, key_prefix=f"sup_{ak}",
+                    grupos=grupos_tnd)
 
 # ===========================================================================
 # PESTAÑA MANTENIMIENTO
@@ -433,10 +452,10 @@ with tab_mtto:
     st.divider()
     st.subheader("TND del periodo")
 
-    df_prog_mes_m = df_areas[
-        (df_areas["fecha_dia"] >= ini_m) & (df_areas["fecha_dia"] <= fin_m)
-        & (df_areas["tipo"] == settings.PROGRAMADO)
-        & (df_areas["turno_horario"].notna())
+    _base_tnd_m = df_areas[df_areas["fecha_turno"].notna()]
+    df_prog_mes_m = _base_tnd_m[
+        (_base_tnd_m["fecha_turno"] >= ini_m) & (_base_tnd_m["fecha_turno"] <= fin_m)
+        & (_base_tnd_m["tipo"] == settings.PROGRAMADO)
     ]
 
     areas_a_mostrar_m = (
