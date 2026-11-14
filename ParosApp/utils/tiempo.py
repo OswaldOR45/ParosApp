@@ -1,13 +1,34 @@
 """Cálculos de tiempo (duración de paros) en formato Horas y Minutos."""
 from datetime import datetime, timedelta, date, time
+from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from config import settings
+
+# Streamlit Cloud corre en UTC. Toda fecha/hora "de planta" debe salir de aquí,
+# nunca de datetime.now() / pd.Timestamp.today() a secas.
+TZ = ZoneInfo("America/Mexico_City")
+
+
+def ahora_mx() -> datetime:
+    """Fecha-hora actual en la planta (con zona horaria)."""
+    return datetime.now(TZ)
+
+
+def hoy_mx() -> pd.Timestamp:
+    """Hoy a las 00:00 hora planta, SIN tz (para comparar contra los
+    TIMESTAMP de la hoja, que se guardan en hora local sin zona)."""
+    return pd.Timestamp(ahora_mx().replace(tzinfo=None)).normalize()
 
 def _delta_min(fecha_inicio: date, hora_inicio: time, hora_fin: time) -> int:
     """Minutos totales entre inicio y fin. Maneja el cruce de medianoche."""
     inicio = datetime.combine(fecha_inicio, hora_inicio)
     fin = datetime.combine(fecha_inicio, hora_fin)
-    if fin <= inicio:
+    # Fin == inicio -> 0 min (no 24 h). Antes, el formulario abría con
+    # inicio = fin = ahora y, si el operador no tocaba "Fin", guardaba 24:00.
+    # Un paro de más de un turno se registra con "continúa", no así.
+    if fin < inicio:
         fin += timedelta(days=1)
     return int(round((fin - inicio).total_seconds() / 60))
 

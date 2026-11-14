@@ -25,6 +25,15 @@ if not acrs.empty and "id_paro" in acrs.columns:
                             "firma_produccion"]
                if c in acrs.columns]
     df = df.merge(acrs[cols_acr], on="id_paro", how="left", suffixes=("", "_acr"))
+    # PAROSV2 conserva columnas legacy (componente, causa_raiz, ...) que ya
+    # vienen vacías: el dato real está en ACRS. Se prioriza el valor de ACRS
+    # y se deja el nombre limpio (lo que espera analisis_paros.py).
+    for c in cols_acr:
+        if f"{c}_acr" in df.columns:
+            acr_val = df[f"{c}_acr"]
+            vacio = acr_val.isna() | (acr_val.astype(str).str.strip() == "")
+            df[c] = acr_val.where(~vacio, df[c])
+            df = df.drop(columns=[f"{c}_acr"])
 
 equipos = ["Todos"] + sorted(df["equipo"].dropna().unique().tolist())
 equipo = st.selectbox("Equipo", equipos)

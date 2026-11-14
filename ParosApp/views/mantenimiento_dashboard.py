@@ -20,7 +20,7 @@ import streamlit as st
 
 from data.sheets import leer_paros, leer_acrs
 from utils.auth import requiere_empresa
-from utils.tiempo import hhmm_a_horas
+from utils.tiempo import hhmm_a_horas, hoy_mx
 
 EMPRESA = requiere_empresa("Dashboard de Mantenimiento")
 
@@ -135,7 +135,7 @@ else:
     with f2:
         st.caption(f"Mostrando paros atendidos por **{EMPRESA}**.")
 
-hoy = pd.Timestamp.today().normalize()
+hoy = hoy_mx()
 if periodo == "Semana":
     cerrados = cerrados[cerrados["fecha"] >= hoy - pd.Timedelta(days=7)]
 elif periodo == "Este Mes":

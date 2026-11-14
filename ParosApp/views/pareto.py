@@ -18,7 +18,7 @@ import streamlit as st
 
 from config import settings
 from data.sheets import leer_paros, cargar_catalogos
-from utils.tiempo import hhmm_a_horas
+from utils.tiempo import hhmm_a_horas, hoy_mx
 
 LINEA_AMBAS = "Línea 1 y 2"
 COLOR_BARRA = "#2563EB"
@@ -79,12 +79,11 @@ if df.empty:
     st.info("Aún no hay datos para mostrar.")
     st.stop()
 
-# Excluir tramos hijos: el Pareto de gerencia usa solo el padre para no
-# contar el mismo evento múltiples veces. Los hijos SÍ se incluyen en el
-# Pareto por supervisor (cuando se implemente el filtro por grupo).
-if "es_continuacion" in df.columns:
-    _ec = df["es_continuacion"].fillna("").str.strip().str.upper()
-    df = df[~_ec.isin({"SÍ", "SI"})].copy()
+# Tramos hijos (multi-turno): se INCLUYEN en las horas (el padre solo trae
+# su tramo); el conteo de paros usa solo padres.
+_ec = df.get("es_continuacion", pd.Series("", index=df.index))
+df = df.copy()
+df["es_hijo"] = _ec.fillna("").astype(str).str.strip().str.upper().isin({"SÍ", "SI"})
 
 # --- Horas (igual que el Dashboard) y fecha --------------------------------
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
@@ -116,7 +115,7 @@ with f2:
     vista_linea = st.segmented_control("Línea", ["Todas", "Línea 1", "Línea 2"],
                                        default="Todas")
 
-hoy = pd.Timestamp.today().normalize()
+hoy = hoy_mx()
 if periodo == "Hoy":
     df = df[df["fecha"] >= hoy]
 elif periodo == "Semana":
@@ -147,7 +146,7 @@ por_area = df.groupby("area")["horas"].sum()
 areas_vitales = vitales_80(por_area)
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Paros no programados", len(df))
+c1.metric("Paros no programados", int((~df["es_hijo"]).sum()))
 c2.metric("Horas perdidas", f"{df['horas'].sum():.1f} h")
 c3.metric("Áreas que causan el 80%", len(areas_vitales))
 

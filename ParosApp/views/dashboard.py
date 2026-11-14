@@ -9,7 +9,7 @@ import streamlit as st
 
 from config import settings
 from data.sheets import leer_paros
-from utils.tiempo import hhmm_a_horas
+from utils.tiempo import hhmm_a_horas, hoy_mx
 
 st.title("Dashboard de Paros")
 
@@ -18,13 +18,12 @@ if df.empty:
     st.info("Aún no hay datos para mostrar.")
     st.stop()
 
-# Excluir tramos hijos (ES_CONTINUACION == SÍ).
-# Los hijos aportan duración parcial del mismo evento; para no duplicar horas
-# en el dashboard solo se usa el padre, que ya suma la duración total del evento.
-# Nota: los hijos SÍ aparecen en el Pareto de supervisores (vista separada).
-if "es_continuacion" in df.columns:
-    _ec = df["es_continuacion"].fillna("").str.strip().str.upper()
-    df = df[~_ec.isin({"SÍ", "SI"})].copy()
+# Tramos hijos (paros multi-turno): el PADRE solo trae la duración de SU
+# tramo, no la del evento completo. Por eso las HORAS se suman con todos los
+# registros (cada tramo cae en el día/turno en que ocurrió) y el CONTEO de
+# paros usa solo padres (1 evento = 1 paro).
+_ec = df.get("es_continuacion", pd.Series("", index=df.index))
+df["es_hijo"] = _ec.fillna("").astype(str).str.strip().str.upper().isin({"SÍ", "SI"})
 
 # Fecha desde el timestamp; horas desde las duraciones H:MM
 df["fecha"] = pd.to_datetime(df.get("timestamp"), errors="coerce")
@@ -50,7 +49,7 @@ with f2:
         "Línea", ["Todas", "Línea 1", "Línea 2", "Comparar"], default="Todas")
 
 # Filtro por periodo
-hoy = pd.Timestamp.today().normalize()
+hoy = hoy_mx()
 if periodo == "Hoy":
     df = df[df["fecha"] >= hoy]
 elif periodo == "Semana":
@@ -72,7 +71,7 @@ if df.empty:
 
 # --- Métricas --------------------------------------------------------------
 c1, c2, c3 = st.columns(3)
-c1.metric("Paros", len(df))
+c1.metric("Paros", int((~df["es_hijo"]).sum()))
 c2.metric("Horas perdidas", f"{df['horas'].sum():.1f} h")
 c3.metric("Horas NO programadas", f"{df['h_noprog'].sum():.1f} h")
 

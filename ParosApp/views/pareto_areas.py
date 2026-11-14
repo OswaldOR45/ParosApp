@@ -33,7 +33,7 @@ import streamlit as st
 
 from config import settings
 from data.sheets import leer_paros, cargar_catalogos
-from utils.tiempo import hhmm_a_horas
+from utils.tiempo import hhmm_a_horas, hoy_mx
 
 MIN_TURNO = 480  # 8 horas
 LINEA_AMBAS = "Línea 1 y 2"
@@ -161,7 +161,7 @@ def _mes_selector(fechas: pd.Series, key: str):
     Devuelve (año, mes, fecha_ini, fecha_fin)."""
     fechas_validas = fechas.dropna()
     if fechas_validas.empty:
-        hoy = pd.Timestamp.today()
+        hoy = hoy_mx()
         opciones = [(hoy.year, hoy.month)]
     else:
         pares = sorted({(d.year, d.month) for d in fechas_validas}, reverse=True)
@@ -169,7 +169,7 @@ def _mes_selector(fechas: pd.Series, key: str):
 
     etiquetas = [f"{MESES_ES[m]} {a}" for a, m in opciones]
     idx_default = 0
-    hoy = pd.Timestamp.today()
+    hoy = hoy_mx()
     if (hoy.year, hoy.month) in opciones:
         idx_default = opciones.index((hoy.year, hoy.month))
 

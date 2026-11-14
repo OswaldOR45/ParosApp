@@ -157,13 +157,22 @@ def cerrar_tramo_en_curso(id_paro: str, hora_fin_str: str, dur_str: str,
                     False = marcar el evento como completamente cerrado.
     id_hijo       : Si continúa, el ID pre-generado para el registro hijo.
     """
-    # 1. Actualizar el padre (o el último hijo) con la hora de fin real y duración
-    #    Nota: para hijos, id_paro es el id_paro del HIJO a actualizar.
-    actualizar_paro(id_paro, {
-        "fin_noprog": hora_fin_str,
-        "dur_noprog": dur_str,
-        "paro_en_curso": "" if not continua else "SÍ",
-    })
+    # Cierra un tramo HIJO que quedó abierto (registros del esquema anterior).
+    # El tramo cerrado NUNCA queda "en curso": esa bandera solo la lleva el
+    # PADRE. Escribe en la columna correcta (programado / no programado).
+    df = leer_paros()
+    fila = df[df.get("id_paro", pd.Series(dtype=str)).astype(str) == str(id_paro)]
+    es_prog = (not fila.empty
+               and str(fila.iloc[0].get("ini_prog", "")).strip() != "")
+    sufijo = "prog" if es_prog else "noprog"
+    campos = {
+        f"fin_{sufijo}": hora_fin_str,
+        f"dur_{sufijo}": dur_str,
+        "paro_en_curso": "",
+    }
+    if grupo:
+        campos["turno"] = grupo
+    actualizar_paro(id_paro, campos)
 
     leer_paros_en_curso.clear()
     leer_hijos_de_paro.clear()

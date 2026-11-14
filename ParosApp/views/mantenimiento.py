@@ -16,11 +16,11 @@ from data.sheets import (leer_paros, leer_acrs, guardar_acr, cargar_catalogos,
                          leer_componentes, agregar_componente,
                          leer_hijos_de_paro)
 from utils.auth import requiere_empresa, verificar_password
-from utils.tiempo import duracion_hhmm, total_minutos, sumar_duraciones_hhmm
+from utils.tiempo import duracion_hhmm, total_minutos, sumar_duraciones_hhmm, ahora_mx
 
 # Pide contraseña antes de mostrar o modificar cualquier dato.
 # Cada empresa entra con su contraseña y solo ve los paros que le tocan
-# (RSI -> RSI+AMBOS, STEO -> STEO+AMBOS, ADMIN -> todo).
+# (RSI -> RSI+AMBOS, STEO -> STEO+AMBOS, ADMIN -> todojunto)
 EMPRESA = requiere_empresa()
 
 st.title("Mantenimiento · Completar paros")
@@ -349,7 +349,7 @@ if enviar:
             "fin_int":           hora_fin_int.strftime("%H:%M"),
             "dur_int":           dur_int_txt,
             "firma_produccion":  "SÍ",
-            "timestamp":         _datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp":         ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
         }
         if orden.strip():
             registro_acr["orden_trabajo"] = orden.strip()

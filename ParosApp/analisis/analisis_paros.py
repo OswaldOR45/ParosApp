@@ -66,16 +66,31 @@ HEADER_TO_FIELD = {
     "ACCIÓN REALIZADA":                       "accion",
     "REFACCIÓN":                              "refaccion",
     "TIPO DE INTERVENCIÓN":                   "tipo_intervencion",
+    "PARO_PADRE":                             "paro_padre",
+    "ES_CONTINUACION":                        "es_continuacion",
+    "PARO_EN_CURSO":                          "paro_en_curso",
 }
+
+# Hoja ACRS (cierres de mantenimiento). Aquí viven componente, causa raíz y
+# tipo de intervención desde que se separó de PAROSV2.
+ACR_HEADER_TO_FIELD = {
+    "ID_PARO": "id_paro", "EMPRESA": "empresa", "ORDEN_TRABAJO": "orden_trabajo",
+    "CAUSA_RAIZ": "causa_raiz", "COMPONENTE": "componente",
+    "TIPO_INTERVENCION": "tipo_intervencion", "ACCION": "accion",
+    "REFACCION": "refaccion", "INI_INT": "ini_int", "FIN_INT": "fin_int",
+    "DUR_INT": "dur_int", "FIRMA_PRODUCCION": "firma_produccion",
+}
+CAMPOS_ACR = ["empresa", "causa_raiz", "componente", "tipo_intervencion",
+              "accion", "refaccion", "dur_int", "orden_trabajo"]
 
 # Motivos que SÍ representan una falla de componente (lo que mide Weibull).
 # El resto (cambio de producto, falta de harina, tolvas llenas...) son paros
 # operativos/logísticos y NO entran al modelo de confiabilidad.
-MOTIVOS_FALLA = {
+MOTIVOS_FALLA = {          # SIN acentos: se comparan contra motivo_n (_norm)
     "MTTTO CORRECTIVO",
     "AJUSTE DE NAVAJAS",
-    "INSTRUMENTACIÓN",
-    "INTERVENCIÓN TÉCNICO",
+    "INSTRUMENTACION",
+    "INTERVENCION TECNICA",
 }
 
 EQUIPOS_CRITICOS = {"EXTRUSOR", "SECADOR", "COATER"}
@@ -122,85 +137,106 @@ def hhmm_a_horas(valor) -> float:
 # ------------------------------------------------------------------------------
 
 def cargar_desde_csv(ruta: str) -> pd.DataFrame:
+    """CSV de la vista Exportar (ya trae las columnas de ACRS unidas)."""
     df = pd.read_csv(ruta, dtype=str).fillna("")
-    return _renombrar_columnas(df)
+    return _consolidar_tramos(_renombrar(df, HEADER_TO_FIELD))
 
 
 def cargar_desde_sheets() -> pd.DataFrame:
-    """Lee directo del Google Sheet (requiere credenciales tipo ParosApp)."""
+    """Lee PAROSV2 + ACRS directo del Google Sheet."""
     import gspread
     from google.oauth2.service_account import Credentials
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     # Ajusta esta ruta a tu service_account.json (NUNCA subir al repo).
     creds = Credentials.from_service_account_file("service_account.json", scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(os.environ["SPREADSHEET_KEY"])
-    ws = sh.worksheet(os.environ.get("HOJA_PAROS", "PAROSV2"))
-    df = pd.DataFrame(ws.get_all_records()).astype(str).fillna("")
-    return _renombrar_columnas(df)
+    sh = gspread.authorize(creds).open_by_key(os.environ["SPREADSHEET_KEY"])
+
+    def _hoja(nombre):
+        vals = sh.worksheet(nombre).get_all_values()
+        if not vals:
+            return pd.DataFrame()
+        return pd.DataFrame(vals[1:], columns=[str(h).strip() for h in vals[0]])
+
+    paros = _renombrar(_hoja(os.environ.get("HOJA_PAROS", "PAROSV2")), HEADER_TO_FIELD)
+    try:
+        acrs = _renombrar(_hoja(os.environ.get("HOJA_ACRS", "ACRS")), ACR_HEADER_TO_FIELD)
+    except Exception:
+        acrs = pd.DataFrame()
+    return _consolidar_tramos(unir_acrs(paros, acrs))
 
 
-def _renombrar_columnas(df: pd.DataFrame) -> pd.DataFrame:
-    inverso = {_norm(k): v for k, v in HEADER_TO_FIELD.items()}
-    df = df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
+def _renombrar(df: pd.DataFrame, mapa: dict) -> pd.DataFrame:
+    df = df.loc[:, [str(c).strip() != "" for c in df.columns]].copy()
+    inverso = {_norm(k): v for k, v in mapa.items()}
+    return df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
 
-    col_ec = next((c for c in df.columns if _norm(c) == _norm("ES_CONTINUACION")), None)
-    col_pp = next((c for c in df.columns if _norm(c) == _norm("PARO_PADRE")), None)
 
-    # Antes de filtrar hijos: sumar su duración al padre para que el análisis
-    # Weibull use la duración total del evento, no solo el tramo del padre.
-    if col_ec and col_pp and "dur_noprog" in df.columns or "dur_prog" in df.columns:
-        _ec_vals = df[col_ec].fillna("").str.strip().str.upper()
-        _hijos   = df[_ec_vals.isin({"SÍ", "SI"})].copy()
-        if not _hijos.empty and col_pp in _hijos.columns:
-            def _to_min(val):
-                s = str(val).strip()
-                if not s or ":" not in s: return 0.0
-                parts = s.split(":")
-                try:
-                    return int(parts[0]) * 60 + int(parts[1])
-                except ValueError:
-                    return 0.0
-            _hijos["_min"] = (_hijos.get("dur_noprog", pd.Series(dtype=str)).apply(_to_min)
-                              + _hijos.get("dur_prog", pd.Series(dtype=str)).apply(_to_min))
-            _suma = (_hijos.groupby(col_pp)["_min"]
-                     .sum().reset_index()
-                     .rename(columns={col_pp: "id_paro", "_min": "_min_hijos"}))
-            if "id_paro" in df.columns:
-                df = df.merge(_suma, on="id_paro", how="left")
-                df["_min_hijos"] = df["_min_hijos"].fillna(0)
+def unir_acrs(paros: pd.DataFrame, acrs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Une los cierres de ACRS a cada paro. Un paro AMBOS puede tener 2 cierres
+    (RSI y STEO): se agregan en UNA fila (valores unidos con ' | ') para no
+    duplicar las horas del paro. El valor de ACRS tiene prioridad sobre las
+    columnas legacy (vacías) de PAROSV2.
+    """
+    if acrs.empty or "id_paro" not in acrs.columns:
+        return paros
+    acrs = acrs.copy()
+    acrs["id_paro"] = acrs["id_paro"].astype(str).str.strip()
+    cols = [c for c in CAMPOS_ACR if c in acrs.columns]
+    agg = (acrs.groupby("id_paro")[cols]
+               .agg(lambda x: " | ".join(v for v in x.astype(str).str.strip() if v))
+               .reset_index())
+    df = paros.copy()
+    df["id_paro"] = df["id_paro"].astype(str).str.strip()
+    df = df.merge(agg, on="id_paro", how="left", suffixes=("", "_acr"))
+    for c in cols:
+        if f"{c}_acr" in df.columns:
+            a = df[f"{c}_acr"].fillna("")
+            df[c] = a.where(a != "", df[c].fillna("") if c in df.columns else "")
+            df = df.drop(columns=[f"{c}_acr"])
+    return df
 
-                def _add_hijos(row):
-                    if _ec_vals.loc[row.name] in {"SÍ", "SI"}:
-                        return row.get("dur_noprog", "") or row.get("dur_prog", "")
-                    # Sumar minutos de hijos a la duración del padre
-                    min_hijo = row.get("_min_hijos", 0)
-                    if min_hijo == 0:
-                        return row.get("dur_noprog", "") or row.get("dur_prog", "")
-                    base = str(row.get("dur_noprog", "") or row.get("dur_prog", "") or "0:00").strip()
-                    base_min = _to_min(base)
-                    total = int(base_min + min_hijo)
-                    return f"{total // 60}:{total % 60:02d}"
 
-                # Solo actualizar dur en padres (no en hijos)
-                es_padre = ~_ec_vals.isin({"SÍ", "SI"})
-                for col_dur in ["dur_noprog", "dur_prog"]:
-                    if col_dur in df.columns:
-                        df.loc[es_padre & (df["_min_hijos"] > 0), col_dur] = \
-                            df.loc[es_padre & (df["_min_hijos"] > 0)].apply(
-                                lambda r: f"{int((_to_min(str(r.get(col_dur,'') or '0:00')) + r['_min_hijos']) // 60)}"
-                                          f":{int((_to_min(str(r.get(col_dur,'') or '0:00')) + r['_min_hijos']) % 60):02d}",
-                                axis=1
-                            )
-                df = df.drop(columns=["_min_hijos"])
+def _a_min(val) -> int:
+    s = str(val).strip()
+    if ":" not in s:
+        return 0
+    try:
+        h, m = s.split(":")[:2]
+        return int(h) * 60 + int(m)
+    except ValueError:
+        return 0
 
-    # Excluir tramos hijos: el análisis Weibull, MTBF/MTTR y Pareto deben
-    # trabajar sobre eventos únicos.
-    if col_ec:
-        _ec = df[col_ec].fillna("").str.strip().str.upper()
-        df = df[~_ec.isin({"SÍ", "SI"})].copy()
 
+def _consolidar_tramos(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Paros multi-turno: suma la duración de los tramos HIJOS al PADRE (en la
+    misma columna que usa el padre: programado o no programado) y elimina los
+    hijos, para que Pareto / MTBF / Weibull trabajen sobre EVENTOS únicos.
+    """
+    if "es_continuacion" not in df.columns or "paro_padre" not in df.columns:
+        return df
+    df = df.copy()
+    es_hijo = df["es_continuacion"].fillna("").astype(str).str.strip().str.upper().isin({"SÍ", "SI"})
+    hijos = df[es_hijo]
+    df = df[~es_hijo].copy()
+    if hijos.empty:
+        return df
+
+    min_hijo = (hijos.get("dur_prog", "").apply(_a_min)
+                + hijos.get("dur_noprog", "").apply(_a_min))
+    suma = min_hijo.groupby(hijos["paro_padre"].astype(str).str.strip()).sum()
+
+    for col in ("dur_prog", "dur_noprog"):
+        if col not in df.columns:
+            df[col] = ""
+    extra = df["id_paro"].astype(str).str.strip().map(suma).fillna(0).astype(int)
+    usa_prog = df["dur_prog"].astype(str).str.strip() != ""
+    for col, mask in (("dur_prog", usa_prog), ("dur_noprog", ~usa_prog)):
+        sel = mask & (extra > 0)
+        tot = df.loc[sel, col].apply(_a_min) + extra[sel]
+        df.loc[sel, col] = [f"{t // 60}:{t % 60:02d}" for t in tot]
     return df
 
 
@@ -235,12 +271,14 @@ def normalizar(df: pd.DataFrame) -> pd.DataFrame:
     # REPARACIÓN  -> falla real pero NO reinicia el reloj de vida.
     #                Va a un análisis aparte (sistema reparable / NHPP).
     # AJUSTE      -> intervención menor; no entra al conteo de fallas.
-    df["es_reemplazo"]  = df["tipo_intervencion_n"] == "REEMPLAZO"
-    df["es_reparacion"] = df["tipo_intervencion_n"] == "REPARACION"
-    df["es_ajuste"]     = df["tipo_intervencion_n"] == "AJUSTE"
-    tiene_clasif = df["tipo_intervencion_n"].isin(
-        ["REEMPLAZO", "REPARACION", "AJUSTE"]
-    )
+    # Un cierre puede traer varios tipos ("Reemplazo | Ajuste"): manda el de
+    # mayor jerarquía (Reemplazo > Reparación > Ajuste).
+    ti = df["tipo_intervencion_n"]
+    df["es_reemplazo"]  = ti.str.contains("REEMPLAZO", regex=False)
+    df["es_reparacion"] = ~df["es_reemplazo"] & ti.str.contains("REPARACION", regex=False)
+    df["es_ajuste"]     = (~df["es_reemplazo"] & ~df["es_reparacion"]
+                           & ti.str.contains("AJUSTE", regex=False))
+    tiene_clasif = df["es_reemplazo"] | df["es_reparacion"] | df["es_ajuste"]
 
     # Compatibilidad hacia atrás: registros previos al campo no tienen
     # tipo_intervencion. Para ellos caemos al heurístico anterior y los
@@ -349,6 +387,12 @@ def construir_historial(df: pd.DataFrame) -> pd.DataFrame:
     fallas = df[df["es_renovacion"] & df["fecha"].notna()].copy()
     if fallas.empty:
         return pd.DataFrame()
+    # Un cierre puede intervenir varios componentes ("A | B"): cada uno es una
+    # renovación de SU propia vida -> una fila por componente.
+    fallas["componente"] = fallas["componente"].astype(str).str.split(r"\s*\|\s*")
+    fallas = fallas.explode("componente")
+    fallas["componente"] = fallas["componente"].fillna("").str.strip()
+    fallas["componente_n"] = fallas["componente"].apply(_norm)
 
     # Paros por línea (para descontar downtime del intervalo)
     todos = df[df["fecha"].notna()].copy()
@@ -452,7 +496,7 @@ def analizar_weibull(historial: pd.DataFrame, min_fallas: int = 8,
         t = g["tbf_oper_h"].to_numpy(dtype=float)
         t = t[t > 0]
         n = len(t)
-        if n < 2:
+        if n < 3:   # con 2 puntos el ajuste es degenerado (β absurdamente alto)
             continue
         beta, eta = _ajustar_weibull(t)
         confiable = n >= min_fallas
