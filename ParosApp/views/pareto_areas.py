@@ -1,68 +1,55 @@
 """
 VISTA — PARETO POR ÁREA + TND (Tiempo Neto Disponible)
 ========================================================
-Sección aparte del Pareto general. Dos pestañas:
+Dos pestañas:
 
-  · Supervisores  : Pareto de motivos NO PROGRAMADOS por área, filtrable
-                    por grupo (A/B/C). Incluye los tramos hijo de paros
-                    multi-turno tal cual (cada supervisor ve SU aportación),
-                    igual que decidimos para el Pareto general.
+  · Supervisores  : Pareto de motivos NO PROGRAMADOS por área. Filtros de
+                    periodo (incluye rango), área, línea y grupo; vistas para
+                    COMPARAR líneas o COMPARAR grupos. Incluye los tramos hijo
+                    de paros multi-turno tal cual (cada grupo ve SU aportación).
+                    Debajo, el TND del periodo en formato visual: tarjetas por
+                    grupo, mapa de calor día × grupo y lista de los turnos que
+                    sí tuvieron paros programados.
   · Mantenimiento : Pareto por EQUIPO de los paros que requirieron apoyo
-                    externo (RSI/STEO/AMBOS). Aquí SÍ se excluyen los
-                    tramos hijo y se suma su duración al padre, porque a
-                    mantenimiento le interesa el tiempo total del evento,
-                    no la fracción de cada turno.
+                    externo, separado por empresa (RSI / STEO) o comparando
+                    ambas. Los tramos hijo se suman al padre (tiempo total del
+                    evento). Sin TND: mantenimiento no produce.
 
-TND (Tiempo Neto Disponible) = 480 min (turno de 8h) − minutos de paros
-PROGRAMADOS de esa línea en ese turno horario (Matutino/Vespertino/
-Nocturno) y ese día. Solo se resta lo PROGRAMADO: los correctivos son
-pérdida de rendimiento, no de disponibilidad planeada, y ya se ven en
-el Pareto.
-
-Áreas cubiertas: Molienda (1 línea), Extrusión (2 líneas), Envasado/
-Empaque (2 líneas). Un paro registrado en "Línea 1 y 2" resta de las
-DOS líneas del área, porque detiene ambas a la vez.
+TND = 480 min (turno de 8 h) − minutos de paros PROGRAMADOS de esa línea, ese
+grupo y ese día de turno. Un paro de "Línea 1 y 2" resta de las DOS líneas.
 """
 import re
 import unicodedata
 from datetime import datetime as ddatetime, time as dtime, date as ddate, timedelta
 
 import pandas as pd
-from plotly.subplots import make_subplots
+import plotly.graph_objects as go
 import streamlit as st
 
 from config import settings
 from data.sheets import leer_paros, cargar_catalogos
-from utils.tiempo import hhmm_a_horas, hoy_mx
+from utils.tiempo import hhmm_a_horas
+from utils.filtros import (selector_periodo, filtrar_fechas, filtrar_linea,
+                           filtrar_grupo, expandir_por_linea, marcar_hijos,
+                           pareto_fig, vitales_80, barras_comparadas,
+                           COLOR_LINEA, COLOR_GRUPO, COLOR_EMPRESA,
+                           LINEA_AMBAS, LINEAS, GRUPOS)
 
 MIN_TURNO = 480  # 8 horas
-LINEA_AMBAS = "Línea 1 y 2"
-GRUPOS = ["A", "B", "C"]  # el TND se calcula por grupo, no por turno horario
 
-COLOR_BARRA = "#2563EB"
-COLOR_LINEA = "#DC2626"
-COLOR_80 = "#9CA3AF"
-
-MESES_ES = {
-    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre",
-    11: "Noviembre", 12: "Diciembre",
-}
-
-# Áreas objetivo: clave normalizada -> (etiqueta bonita, líneas que aplican)
+# Áreas objetivo: clave normalizada -> (etiqueta, líneas que aplican)
 AREAS_OBJETIVO = {
     "MOLIENDA":  {"label": "Molienda",  "lineas": ["Línea 1"]},
     "EXTRUSION": {"label": "Extrusión", "lineas": ["Línea 1", "Línea 2"]},
     "EMPAQUE":   {"label": "Envasado",  "lineas": ["Línea 1", "Línea 2"]},
 }
-# Alias -> hacia qué clave de AREAS_OBJETIVO mapea (por si el dato viene
-# escrito distinto: "ENVASADO" en vez de "EMPAQUE", etc.)
-ALIAS_AREA = {
-    "MOLIENDA": "MOLIENDA",
-    "EXTRUSION": "EXTRUSION",
-    "EMPAQUE": "EMPAQUE",
-    "ENVASADO": "EMPAQUE",
-}
+ALIAS_AREA = {"MOLIENDA": "MOLIENDA", "EXTRUSION": "EXTRUSION",
+              "EMPAQUE": "EMPAQUE", "ENVASADO": "EMPAQUE"}
+LABEL_TO_KEY = {v["label"]: k for k, v in AREAS_OBJETIVO.items()}
+
+# Escala secuencial de UN tono: blanco = turno completo, azul oscuro = más
+# minutos perdidos por paros programados.
+ESCALA_TND = [[0.0, "#F8FAFC"], [0.001, "#DBEAFE"], [0.5, "#60A5FA"], [1.0, "#1E3A8A"]]
 
 
 def _norm(texto) -> str:
@@ -120,138 +107,138 @@ def _fecha_turno(ts, hora_str):
     return fecha
 
 
-def pareto_fig(serie_horas: pd.Series, eje_label: str):
-    s = serie_horas[serie_horas > 0].sort_values(ascending=False)
-    if s.empty:
-        return None
-    acum = s.cumsum() / s.sum() * 100.0
-    cats = [str(c) for c in s.index]
-
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_bar(x=cats, y=s.values, name="Horas perdidas",
-                marker_color=COLOR_BARRA, secondary_y=False)
-    fig.add_scatter(x=cats, y=acum.values, name="% acumulado",
-                    mode="lines+markers", line=dict(color=COLOR_LINEA),
-                    secondary_y=True)
-    fig.add_hline(y=80, line_dash="dash", line_color=COLOR_80,
-                  annotation_text="80%", annotation_position="top left",
-                  secondary_y=True)
-    fig.update_yaxes(title_text="Horas", secondary_y=False)
-    fig.update_yaxes(title_text="% acumulado", range=[0, 105], secondary_y=True)
-    fig.update_layout(
-        xaxis_title=eje_label,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        bargap=0.25, margin=dict(t=40, b=10),
-    )
-    return fig
-
-
-def vitales_80(serie_horas: pd.Series) -> list:
-    s = serie_horas[serie_horas > 0].sort_values(ascending=False)
-    if s.empty:
-        return []
-    acum = s.cumsum() / s.sum() * 100.0
-    corte = acum[acum <= 80]
-    n = len(corte) + (1 if len(corte) < len(s) else 0)
-    return list(s.index[:max(n, 1)])
-
-
-def _mes_selector(fechas: pd.Series, key: str):
-    """Selector de mes a partir de las fechas presentes en los datos.
-    Devuelve (año, mes, fecha_ini, fecha_fin)."""
-    fechas_validas = fechas.dropna()
-    if fechas_validas.empty:
-        hoy = hoy_mx()
-        opciones = [(hoy.year, hoy.month)]
-    else:
-        pares = sorted({(d.year, d.month) for d in fechas_validas}, reverse=True)
-        opciones = pares
-
-    etiquetas = [f"{MESES_ES[m]} {a}" for a, m in opciones]
-    idx_default = 0
-    hoy = hoy_mx()
-    if (hoy.year, hoy.month) in opciones:
-        idx_default = opciones.index((hoy.year, hoy.month))
-
-    sel = st.selectbox("Mes", etiquetas, index=idx_default, key=key)
-    anio, mes = opciones[etiquetas.index(sel)]
-    fecha_ini = ddate(anio, mes, 1)
-    if mes == 12:
-        fecha_fin = ddate(anio, 12, 31)
-    else:
-        fecha_fin = ddate(anio, mes + 1, 1) - pd.Timedelta(days=1)
-        fecha_fin = fecha_fin.date() if hasattr(fecha_fin, "date") else fecha_fin
-    return anio, mes, fecha_ini, fecha_fin
-
-
 def _area_key(valor_area: str) -> str | None:
     n = _norm(valor_area)
     return ALIAS_AREA.get(n)
 
 
-def calcular_tnd(df_prog: pd.DataFrame, area_key: str,
-                  fecha_ini: ddate, fecha_fin: ddate,
-                  grupos: list | None = None) -> pd.DataFrame:
-    """
-    df_prog: paros PROGRAMADOS ya filtrados a esta área, con columnas
-             'fecha_turno' (date), 'turno' (grupo A/B/C), 'linea', 'min_prog'.
-    Devuelve una tabla con TND por (Fecha de turno, Línea, Grupo).
-    """
-    grupos = grupos or GRUPOS
-    lineas_area = AREAS_OBJETIVO[area_key]["lineas"]
-    dias = pd.date_range(fecha_ini, fecha_fin, freq="D")
 
+
+# ---------------------------------------------------------------------------
+# TND
+# ---------------------------------------------------------------------------
+def calcular_tnd(df_prog: pd.DataFrame, area_key: str, fecha_ini: ddate,
+                 fecha_fin: ddate, grupos: list, lineas: list) -> pd.DataFrame:
+    """TND por (día de turno, línea, grupo). df_prog = paros PROGRAMADOS del área."""
+    lineas_area = [l for l in AREAS_OBJETIVO[area_key]["lineas"] if l in lineas]
     filas = []
-    for dia in dias:
+    for dia in pd.date_range(fecha_ini, fecha_fin, freq="D"):
         dia_d = dia.date()
+        del_dia = df_prog[df_prog["fecha_turno"] == dia_d]
         for linea in lineas_area:
-            mask_linea = df_prog["linea"].isin([linea, LINEA_AMBAS])
+            d_ln = del_dia[del_dia["linea"].isin([linea, LINEA_AMBAS])]
             for grupo in grupos:
-                mask = (
-                    (df_prog["fecha_turno"] == dia_d)
-                    & (df_prog["turno"] == grupo)
-                    & mask_linea
-                )
-                min_perdidos = df_prog.loc[mask, "min_prog"].sum()
-                tnd_min = MIN_TURNO - min_perdidos
+                d = d_ln[d_ln["turno"] == grupo]
+                # Tope de 480 min: un paro programado de más de 8 h registrado
+                # en un solo turno no puede dejar un TND negativo.
+                perdidos = min(float(d["min_prog"].sum()), MIN_TURNO)
                 filas.append({
-                    "Fecha": dia_d,
-                    "Línea": linea,
-                    "Grupo": grupo,
-                    "Min. programados": round(min_perdidos, 0),
-                    "TND (min)": round(tnd_min, 0),
-                    "TND (h)": round(tnd_min / 60, 2),
+                    "Fecha": dia_d, "Línea": linea, "Grupo": grupo,
+                    "Min. programados": round(perdidos),
+                    "TND (h)": round((MIN_TURNO - perdidos) / 60, 2),
+                    "Motivos": ", ".join(sorted(set(d["motivo"]) - {""})),
                 })
     return pd.DataFrame(filas)
 
 
-def mostrar_tnd(df_prog_mes: pd.DataFrame, area_key: str,
-                 fecha_ini: ddate, fecha_fin: ddate, key_prefix: str,
-                 grupos: list | None = None):
-    """Renderiza el bloque de TND para un área: resumen por grupo + detalle."""
-    label = AREAS_OBJETIVO[area_key]["label"]
-    tabla = calcular_tnd(df_prog_mes, area_key, fecha_ini, fecha_fin, grupos)
+def _heatmap_tnd(tabla: pd.DataFrame, label: str, varias_lineas: bool):
+    t = tabla.copy()
+    t["Fila"] = ("Grupo " + t["Grupo"]
+                 + ((" · " + t["Línea"]) if varias_lineas else ""))
+    filas = sorted(t["Fila"].unique(), reverse=True)  # A arriba
+    fechas = sorted(t["Fecha"].unique())
+    piv = t.pivot_table(index="Fila", columns="Fecha", values="Min. programados",
+                        aggfunc="sum").reindex(index=filas, columns=fechas).fillna(0)
+    mot = t.pivot_table(index="Fila", columns="Fecha", values="Motivos",
+                        aggfunc="first").reindex(index=filas, columns=fechas).fillna("")
+    tnd_h = (MIN_TURNO - piv) / 60
+    # Texto solo en los turnos que perdieron tiempo (el resto queda limpio)
+    texto = tnd_h.round(1).astype(str).where(piv > 0, "")
+    hover = ("<b>%{y}</b> · %{x|%d/%m}<br>TND: %{customdata[0]:.2f} h"
+             "<br>Perdido: %{z:.0f} min<br>%{customdata[1]}<extra></extra>")
+    custom = [[[tnd_h.iat[i, j], mot.iat[i, j] or "Sin paros programados"]
+               for j in range(len(fechas))] for i in range(len(filas))]
+    fig = go.Figure(go.Heatmap(
+        z=piv.values, x=[pd.Timestamp(f) for f in fechas], y=filas,
+        text=texto.values, texttemplate="%{text}", textfont=dict(size=10),
+        customdata=custom, hovertemplate=hover,
+        colorscale=ESCALA_TND, zmin=0, zmax=MIN_TURNO,
+        xgap=2, ygap=2, colorbar=dict(title="Min<br>perdidos", thickness=12),
+    ))
+    fig.update_layout(title=f"{label} — TND por día (número = horas disponibles)",
+                      height=140 + 36 * len(filas), margin=dict(t=50, b=40, l=120, r=10),
+                      xaxis=dict(tickformat="%d/%m", showgrid=False, automargin=True,
+                                 dtick=86400000 * (1 if len(fechas) <= 35 else 7)),
+                      yaxis=dict(showgrid=False, automargin=True))
+    return fig
 
+
+def mostrar_tnd(df_prog: pd.DataFrame, area_key: str, ini: ddate, fin: ddate,
+                grupos: list, lineas: list, key: str):
+    label = AREAS_OBJETIVO[area_key]["label"]
+    tabla = calcular_tnd(df_prog, area_key, ini, fin, grupos, lineas)
     if tabla.empty:
-        st.info(f"Sin datos de TND para {label} en este periodo.")
+        st.info(f"{label}: no aplica para la línea seleccionada.")
         return
 
+    st.markdown(f"#### {label}")
+    varias_lineas = tabla["Línea"].nunique() > 1
+
+    # 1) Tarjetas: TND promedio por turno, por grupo (y línea)
     resumen = (tabla.groupby(["Grupo", "Línea"])
-               .agg(**{"TND promedio (h)": ("TND (h)", "mean"),
-                       "TND total del mes (h)": ("TND (h)", "sum"),
-                       "Días": ("Fecha", "nunique")})
+               .agg(prom=("TND (h)", "mean"),
+                    afectados=("Min. programados", lambda x: int((x > 0).sum())),
+                    turnos=("Fecha", "size"),
+                    perdidas=("Min. programados", "sum"))
                .reset_index())
-    resumen["TND promedio (h)"] = resumen["TND promedio (h)"].round(2)
-    resumen["TND total del mes (h)"] = resumen["TND total del mes (h)"].round(1)
+    for linea, r_ln in resumen.groupby("Línea", sort=True):
+        if varias_lineas:
+            st.caption(f"**{linea}**")
+        cols = st.columns(len(r_ln))
+        for col, (_, r) in zip(cols, r_ln.iterrows()):
+            disp = r["prom"] / 8 * 100
+            col.metric(f"Grupo {r['Grupo']}", f"{r['prom']:.2f} h",
+                       delta=f"{r['prom'] - 8:+.2f} h vs 8 h" if r["perdidas"] else "Turno completo",
+                       delta_color="normal" if r["perdidas"] else "off",
+                       help=f"Disponibilidad promedio {disp:.1f}% · "
+                            f"{r['afectados']} de {r['turnos']} turnos con paro programado · "
+                            f"{r['perdidas'] / 60:.1f} h programadas en el periodo")
 
-    st.markdown(f"**TND — {label}**")
-    st.dataframe(resumen, use_container_width=True, hide_index=True)
+    # 2) Mapa de calor
+    st.plotly_chart(_heatmap_tnd(tabla, label, varias_lineas), width="stretch",
+                    key=f"{key}_heat")
 
-    with st.expander(f"Ver detalle día por día · {label}"):
-        st.dataframe(
-            tabla.sort_values(["Grupo", "Línea", "Fecha"]),
-            use_container_width=True, hide_index=True,
-        )
+    # 3) Solo los turnos que perdieron tiempo
+    afect = tabla[tabla["Min. programados"] > 0].sort_values(["Fecha", "Grupo", "Línea"])
+    with st.expander(f"Turnos con paro programado · {len(afect)}"):
+        if afect.empty:
+            st.caption("Ningún turno tuvo paros programados en el periodo: TND = 8 h en todos.")
+        else:
+            vista = afect.assign(Fecha=pd.to_datetime(afect["Fecha"]).dt.strftime("%d/%m/%Y"))
+            st.dataframe(vista[["Fecha", "Grupo", "Línea", "TND (h)",
+                                "Min. programados", "Motivos"]],
+                         width="stretch", hide_index=True,
+                         column_config={"TND (h)": st.column_config.ProgressColumn(
+                             "TND (h)", min_value=0, max_value=8, format="%.2f h")})
+        st.download_button("⬇️ Descargar TND día por día (CSV)",
+                           tabla.to_csv(index=False).encode("utf-8-sig"),
+                           file_name=f"TND_{label}.csv", mime="text/csv",
+                           key=f"{key}_csv")
+
+
+def _paretos_lado_a_lado(dfs: dict, colores: dict, eje: str, cat: str, key: str):
+    """Un Pareto por serie (línea / grupo / empresa), uno junto al otro."""
+    cols = st.columns(len(dfs))
+    for col, (nombre, d) in zip(cols, dfs.items()):
+        s = d.groupby(cat)["horas"].sum()
+        with col:
+            fig = pareto_fig(s, eje, color=colores[nombre], titulo=str(nombre), altura=380)
+            if fig is None:
+                st.info(f"{nombre}: sin datos.")
+            else:
+                st.plotly_chart(fig, width="stretch", key=f"{key}_{nombre}")
+                st.caption(f"{d['horas'].sum():.1f} h · Pocos vitales: "
+                           + ", ".join(map(str, vitales_80(s))))
 
 
 # ===========================================================================
@@ -262,45 +249,30 @@ if df_raw.empty:
     st.info("Aún no hay datos para mostrar.")
     st.stop()
 
-# --- Preparación común -------------------------------------------------
 df_raw = df_raw.copy()
+df_raw["es_hijo"] = marcar_hijos(df_raw)
 df_raw["fecha_ts"] = pd.to_datetime(df_raw.get("timestamp"), errors="coerce")
-df_raw["fecha_dia"] = df_raw["fecha_ts"].dt.date
 df_raw["h_prog"] = df_raw.get("dur_prog", "").apply(hhmm_a_horas)
 df_raw["h_noprog"] = df_raw.get("dur_noprog", "").apply(hhmm_a_horas)
 df_raw["horas"] = df_raw["h_prog"] + df_raw["h_noprog"]
 df_raw["min_prog"] = df_raw.get("dur_prog", "").apply(_to_min)
-
-df_raw["area"] = df_raw.get("area", "").fillna("").astype(str).str.strip()
-df_raw["linea"] = df_raw.get("linea", "").fillna("").astype(str).str.strip()
-df_raw["motivo"] = df_raw.get("motivo", "").fillna("").astype(str).str.strip()
-df_raw["turno"] = df_raw.get("turno", "").fillna("").astype(str).str.strip()  # grupo A/B/C
-
+for c in ("area", "linea", "motivo", "turno", "equipo"):
+    df_raw[c] = df_raw.get(c, "").fillna("").astype(str).str.strip()
 df_raw["area_key"] = df_raw["area"].apply(_area_key)
 
-# Clasificación PROGRAMADO / NO PROGRAMADO (mismo catálogo que pareto.py)
 tipo_por_motivo = cargar_catalogos().get("tipo_por_motivo", {})
 tipo_norm = {_norm(k): v for k, v in tipo_por_motivo.items()}
 df_raw["tipo"] = df_raw["motivo"].map(lambda m: tipo_norm.get(_norm(m), settings.NO_PROGRAMADO))
 
-# Fecha del turno (el nocturno de madrugada cuenta como el día que arrancó).
-# Los paros PROGRAMADOS usan ini_prog; los NO PROGRAMADOS, ini_noprog.
-df_raw["hora_ini_efectiva"] = df_raw.get("ini_prog", "").where(
-    df_raw.get("ini_prog", "").astype(str).str.strip() != "",
-    df_raw.get("ini_noprog", ""),
-)
+ini_col = df_raw.get("ini_prog", pd.Series("", index=df_raw.index)).astype(str).str.strip()
+df_raw["hora_ini_efectiva"] = ini_col.where(ini_col != "", df_raw.get("ini_noprog", ""))
 df_raw["fecha_turno"] = df_raw.apply(
-    lambda r: _fecha_turno(r["fecha_ts"], r["hora_ini_efectiva"]), axis=1
-)
+    lambda r: _fecha_turno(r["fecha_ts"], r["hora_ini_efectiva"]), axis=1)
 
-# Solo nos interesan los registros de las 3 áreas objetivo para esta vista
 df_areas = df_raw[df_raw["area_key"].notna()].copy()
-
 if df_areas.empty:
-    st.warning(
-        "No se encontraron registros en Molienda, Extrusión o Envasado/Empaque. "
-        "Revisa que el campo ÁREA use esos nombres."
-    )
+    st.warning("No se encontraron registros en Molienda, Extrusión o Envasado/Empaque. "
+               "Revisa que el campo ÁREA use esos nombres.")
     st.stop()
 
 tab_sup, tab_mtto = st.tabs(["👷 Supervisores", "🔧 Mantenimiento"])
@@ -309,159 +281,172 @@ tab_sup, tab_mtto = st.tabs(["👷 Supervisores", "🔧 Mantenimiento"])
 # PESTAÑA SUPERVISORES
 # ===========================================================================
 with tab_sup:
-    st.caption(
-        "Pareto de motivos no programados por área y grupo, con el TND del "
-        "mismo periodo como referencia de disponibilidad."
-    )
+    st.caption("Pareto de motivos no programados por área, línea y grupo, con el "
+               "TND del mismo periodo.")
 
-    anio_s, mes_s, ini_s, fin_s = _mes_selector(df_areas["fecha_ts"], key="mes_sup")
+    ini_s, fin_s, etq_s = selector_periodo(df_areas["fecha_ts"], key="sup",
+                                           default="Este mes")
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        area_sel = st.selectbox("Área", ["Todas"] + list(LABEL_TO_KEY), key="sup_area")
+    with f2:
+        linea_sel = st.segmented_control("Línea", ["Todas"] + LINEAS,
+                                         default="Todas", key="sup_linea") or "Todas"
+    with f3:
+        grupo_sel = st.segmented_control("Grupo", ["Todos"] + GRUPOS,
+                                         default="Todos", key="sup_grupo") or "Todos"
+    vista = st.segmented_control("Vista", ["Normal", "Comparar líneas", "Comparar grupos"],
+                                 default="Normal", key="sup_vista") or "Normal"
 
-    fcol1, fcol2 = st.columns(2)
-    with fcol1:
-        opciones_area = ["Todas"] + [v["label"] for v in AREAS_OBJETIVO.values()]
-        area_sel_sup = st.segmented_control("Área", opciones_area,
-                                            default="Todas", key="area_sup")
-    with fcol2:
-        grupo_sel = st.segmented_control("Grupo", ["Todos", "A", "B", "C"],
-                                         default="Todos", key="grupo_sup")
+    d_sup = filtrar_fechas(df_areas, "fecha_ts", ini_s, fin_s)
+    if area_sel != "Todas":
+        d_sup = d_sup[d_sup["area_key"] == LABEL_TO_KEY[area_sel]]
+    if vista != "Comparar líneas":
+        d_sup = filtrar_linea(d_sup, linea_sel)
+    if vista != "Comparar grupos":
+        d_sup = filtrar_grupo(d_sup, grupo_sel)
 
-    label_to_key = {v["label"]: k for k, v in AREAS_OBJETIVO.items()}
+    if vista == "Comparar líneas" and linea_sel != "Todas":
+        st.caption("Comparando ambas líneas (el filtro de línea no aplica en esta vista).")
+    if vista == "Comparar grupos" and grupo_sel != "Todos":
+        st.caption("Comparando los 3 grupos (el filtro de grupo no aplica en esta vista).")
 
-    # --- Filtrado del periodo (mes completo) --------------------------
-    df_mes_sup = df_areas[
-        (df_areas["fecha_dia"] >= ini_s) & (df_areas["fecha_dia"] <= fin_s)
-    ].copy()
-
-    if area_sel_sup != "Todas":
-        df_mes_sup = df_mes_sup[df_mes_sup["area_key"] == label_to_key[area_sel_sup]]
-
-    if grupo_sel != "Todos":
-        df_mes_sup = df_mes_sup[df_mes_sup["turno"] == grupo_sel]
-
-    # --- Pareto: solo NO PROGRAMADOS, incluye tramos hijo tal cual -----
-    # (cada supervisor ve su propia aportación, como se decidió para el
-    # Pareto por grupo).
-    df_pareto_sup = df_mes_sup[
-        (df_mes_sup["tipo"] == settings.NO_PROGRAMADO) & (df_mes_sup["horas"] > 0)
-    ]
+    d_np = d_sup[(d_sup["tipo"] == settings.NO_PROGRAMADO) & (d_sup["horas"] > 0)]
 
     st.divider()
-    st.subheader(f"Pareto de motivos — {MESES_ES[mes_s]} {anio_s}")
+    st.subheader(f"Pareto de motivos — {etq_s}")
 
-    if df_pareto_sup.empty:
+    if d_np.empty:
         st.warning("No hay paros no programados para este filtro.")
-    else:
-        por_motivo_sup = df_pareto_sup.groupby("motivo")["horas"].sum()
-        fig_sup = pareto_fig(por_motivo_sup, "Motivo")
-        st.plotly_chart(fig_sup, width="stretch")
+    elif vista == "Normal":
+        s = d_np.groupby("motivo")["horas"].sum()
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Paros no programados", int((~d_np["es_hijo"]).sum()))
+        c2.metric("Horas perdidas", f"{d_np['horas'].sum():.1f} h")
+        c3.metric("Motivos que causan el 80%", len(vitales_80(s)))
+        st.plotly_chart(pareto_fig(s, "Motivo"), width="stretch", key="sup_par")
+        st.caption("**Pocos vitales (≈80%):** " + ", ".join(map(str, vitales_80(s))))
+    elif vista == "Comparar líneas":
+        dc = expandir_por_linea(d_np)
+        cols = st.columns(2)
+        for col, ln in zip(cols, LINEAS):
+            d = dc[dc["linea_cmp"] == ln]
+            col.metric(ln, f"{d['horas'].sum():.1f} h",
+                       help=f"{int((~d['es_hijo']).sum())} paros no programados")
+        st.plotly_chart(barras_comparadas(dc, "motivo", "linea_cmp",
+                                          {k: COLOR_LINEA[k] for k in LINEAS},
+                                          "Horas por motivo — Línea 1 vs Línea 2", "Motivo",
+                                          top=12), width="stretch", key="sup_cmp_ln")
+        _paretos_lado_a_lado({ln: dc[dc["linea_cmp"] == ln] for ln in LINEAS},
+                             COLOR_LINEA, "Motivo", "motivo", key="sup_pln")
+        st.caption(f"Los paros de «{LINEA_AMBAS}» cuentan en las dos líneas.")
+    else:  # Comparar grupos
+        dg = d_np[d_np["turno"].isin(GRUPOS)]
+        cols = st.columns(3)
+        for col, g in zip(cols, GRUPOS):
+            d = dg[dg["turno"] == g]
+            col.metric(f"Grupo {g}", f"{d['horas'].sum():.1f} h",
+                       help=f"{int((~d['es_hijo']).sum())} paros no programados")
+        st.plotly_chart(barras_comparadas(dg, "motivo", "turno", COLOR_GRUPO,
+                                          "Horas por motivo — por grupo", "Motivo",
+                                          top=12), width="stretch", key="sup_cmp_gr")
+        tabs_g = st.tabs([f"Pareto grupo {g}" for g in GRUPOS])
+        for t, g in zip(tabs_g, GRUPOS):
+            with t:
+                s = dg[dg["turno"] == g].groupby("motivo")["horas"].sum()
+                fig = pareto_fig(s, "Motivo", color=COLOR_GRUPO[g])
+                if fig is None:
+                    st.info(f"Grupo {g}: sin paros no programados.")
+                else:
+                    st.plotly_chart(fig, width="stretch", key=f"sup_pg_{g}")
+                    st.caption("**Pocos vitales:** " + ", ".join(map(str, vitales_80(s))))
 
-        c1, c2 = st.columns(2)
-        c1.metric("Paros no programados", len(df_pareto_sup))
-        c2.metric("Horas perdidas", f"{df_pareto_sup['horas'].sum():.1f} h")
-
-        vitales = vitales_80(por_motivo_sup)
-        if vitales:
-            st.caption("**Pocos vitales (≈80%):** " + ", ".join(map(str, vitales)))
-
+    # --- TND -----------------------------------------------------------
     st.divider()
-    st.subheader("TND del periodo")
+    st.subheader(f"TND — {etq_s}")
+    st.caption("Horas disponibles por turno (8 h menos paros programados). "
+               "Celdas en blanco = turno completo; entre más oscuro, más tiempo "
+               "programado perdido. Pasa el cursor sobre una celda para ver el motivo.")
 
-    # Paros PROGRAMADOS del mes, por GRUPO. Respeta el filtro de grupo de
-    # arriba: si el supervisor eligió su grupo, solo ve el TND de ese grupo.
-    _base_tnd = df_areas[df_areas["fecha_turno"].notna()]
-    df_prog_mes = _base_tnd[
-        (_base_tnd["fecha_turno"] >= ini_s) & (_base_tnd["fecha_turno"] <= fin_s)
-        & (_base_tnd["tipo"] == settings.PROGRAMADO)
-    ]
-    grupos_tnd = GRUPOS if grupo_sel in (None, "Todos") else [grupo_sel]
+    base = df_areas[df_areas["fecha_turno"].notna()]
+    ft = pd.to_datetime(base["fecha_turno"])
+    d_prog = base[(ft >= pd.Timestamp(ini_s)) & (ft <= pd.Timestamp(fin_s))
+                  & (base["tipo"] == settings.PROGRAMADO)]
+    grupos_tnd = GRUPOS if (grupo_sel == "Todos" or vista == "Comparar grupos") else [grupo_sel]
+    lineas_tnd = LINEAS if (linea_sel == "Todas" or vista == "Comparar líneas") else [linea_sel]
+    areas_tnd = [LABEL_TO_KEY[area_sel]] if area_sel != "Todas" else list(AREAS_OBJETIVO)
 
-    areas_a_mostrar = (
-        [label_to_key[area_sel_sup]] if area_sel_sup != "Todas"
-        else list(AREAS_OBJETIVO.keys())
-    )
-    for ak in areas_a_mostrar:
-        df_prog_area = df_prog_mes[df_prog_mes["area_key"] == ak]
-        mostrar_tnd(df_prog_area, ak, ini_s, fin_s, key_prefix=f"sup_{ak}",
-                    grupos=grupos_tnd)
+    if (fin_s - ini_s).days > 62:
+        st.info("Periodo largo: el mapa de calor puede verse comprimido. "
+                "Usa «Este mes» o un rango para ver el detalle por día.")
+    for ak in areas_tnd:
+        mostrar_tnd(d_prog[d_prog["area_key"] == ak], ak, ini_s, fin_s,
+                    grupos_tnd, lineas_tnd, key=f"tnd_{ak}")
 
 # ===========================================================================
 # PESTAÑA MANTENIMIENTO
 # ===========================================================================
 with tab_mtto:
-    st.caption(
-        "Pareto por equipo de los paros que requirieron apoyo externo "
-        "(RSI / STEO / AMBOS), con el TND del mismo periodo. Los tramos "
-        "de paros multi-turno se suman a su padre para reflejar el tiempo "
-        "total del evento."
-    )
+    st.caption("Pareto por equipo de los paros que requirieron apoyo externo. "
+               "Los tramos de paros multi-turno se suman a su padre (tiempo total "
+               "del evento). Un paro «AMBOS» cuenta para RSI y para STEO.")
 
-    anio_m, mes_m, ini_m, fin_m = _mes_selector(df_areas["fecha_ts"], key="mes_mtto")
+    ini_m, fin_m, etq_m = selector_periodo(df_areas["fecha_ts"], key="mtto",
+                                           default="Este mes")
+    m1, m2 = st.columns(2)
+    with m1:
+        area_m = st.selectbox("Área", ["Todas"] + list(LABEL_TO_KEY), key="mtto_area")
+    with m2:
+        empresa = st.segmented_control("Empresa", ["Todas", "RSI", "STEO", "Comparar"],
+                                       default="Todas", key="mtto_emp") or "Todas"
 
-    area_sel_mtto = st.segmented_control(
-        "Área", ["Todas"] + [v["label"] for v in AREAS_OBJETIVO.values()],
-        default="Todas", key="area_mtto",
-    )
+    d_m = filtrar_fechas(df_areas, "fecha_ts", ini_m, fin_m).copy()
+    if area_m != "Todas":
+        d_m = d_m[d_m["area_key"] == LABEL_TO_KEY[area_m]]
+    d_m["apoyo"] = d_m.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
+    d_m = d_m[d_m["apoyo"].isin({"RSI", "STEO", "AMBOS"})]
 
-    df_mes_mtto = df_areas[
-        (df_areas["fecha_dia"] >= ini_m) & (df_areas["fecha_dia"] <= fin_m)
-    ].copy()
+    # Hijos -> se suman al padre
+    hijos_m = d_m[d_m["es_hijo"]]
+    d_m = d_m[~d_m["es_hijo"]].copy()
+    if not hijos_m.empty and "paro_padre" in hijos_m.columns:
+        suma = hijos_m.groupby(hijos_m["paro_padre"].astype(str).str.strip())["horas"].sum()
+        d_m["horas"] = d_m["horas"] + d_m["id_paro"].astype(str).str.strip().map(suma).fillna(0)
+    d_m = d_m[d_m["horas"] > 0]
+    d_m["equipo"] = d_m["equipo"].where(d_m["equipo"] != "", "Sin equipo")
 
-    if area_sel_mtto != "Todas":
-        df_mes_mtto = df_mes_mtto[df_mes_mtto["area_key"] == label_to_key[area_sel_mtto]]
-
-    # Solo paros que requirieron apoyo externo (relevantes para mantenimiento)
-    apoyo = df_mes_mtto.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
-    df_mes_mtto = df_mes_mtto[apoyo.isin({"RSI", "STEO", "AMBOS", "SI", "SÍ"})]
-
-    # Excluir hijos y sumar su duración al padre: a mantenimiento le
-    # interesa el tiempo total del evento, no el tramo de cada turno.
-    if "es_continuacion" in df_mes_mtto.columns:
-        ec = df_mes_mtto["es_continuacion"].fillna("").str.strip().str.upper()
-        hijos_m = df_mes_mtto[ec.isin({"SÍ", "SI"})].copy()
-        df_mes_mtto = df_mes_mtto[~ec.isin({"SÍ", "SI"})].copy()
-
-        if not hijos_m.empty and "paro_padre" in hijos_m.columns:
-            suma_hijos = (hijos_m.groupby("paro_padre")["horas"]
-                         .sum().reset_index()
-                         .rename(columns={"paro_padre": "id_paro", "horas": "horas_hijos"}))
-            df_mes_mtto = df_mes_mtto.merge(suma_hijos, on="id_paro", how="left")
-            df_mes_mtto["horas_hijos"] = df_mes_mtto["horas_hijos"].fillna(0)
-            df_mes_mtto["horas"] = df_mes_mtto["horas"] + df_mes_mtto["horas_hijos"]
-
-    df_mes_mtto["equipo"] = df_mes_mtto.get("equipo", "").fillna("").astype(str).str.strip()
-    df_pareto_mtto = df_mes_mtto[df_mes_mtto["horas"] > 0]
+    def _de_empresa(emp: str) -> pd.DataFrame:
+        return d_m[d_m["apoyo"].isin({emp, "AMBOS"})]
 
     st.divider()
-    st.subheader(f"Pareto por equipo — {MESES_ES[mes_m]} {anio_m}")
+    st.subheader(f"Pareto por equipo — {etq_m}")
 
-    if df_pareto_mtto.empty:
+    if d_m.empty:
         st.warning("No hay paros con apoyo externo para este filtro.")
+    elif empresa == "Comparar":
+        por_emp = {e: _de_empresa(e) for e in ("RSI", "STEO")}
+        cols = st.columns(2)
+        for col, (e, d) in zip(cols, por_emp.items()):
+            col.metric(e, f"{d['horas'].sum():.1f} h", help=f"{len(d)} eventos")
+        dc = pd.concat([d.assign(empresa=e) for e, d in por_emp.items()], ignore_index=True)
+        st.plotly_chart(barras_comparadas(dc, "equipo", "empresa", COLOR_EMPRESA,
+                                          "Horas por equipo — RSI vs STEO", "Equipo"),
+                        width="stretch", key="mtto_cmp")
+        _paretos_lado_a_lado(por_emp, COLOR_EMPRESA, "Equipo", "equipo", key="mtto_p")
     else:
-        por_equipo = df_pareto_mtto.groupby("equipo")["horas"].sum()
-        fig_mtto = pareto_fig(por_equipo, "Equipo")
-        st.plotly_chart(fig_mtto, width="stretch")
-
-        c1, c2 = st.columns(2)
-        c1.metric("Eventos con apoyo externo", len(df_pareto_mtto))
-        c2.metric("Horas totales", f"{df_pareto_mtto['horas'].sum():.1f} h")
-
-        vitales_eq = vitales_80(por_equipo)
-        if vitales_eq:
-            st.caption("**Pocos vitales (≈80%):** " + ", ".join(map(str, vitales_eq)))
-
-    st.divider()
-    st.subheader("TND del periodo")
-
-    _base_tnd_m = df_areas[df_areas["fecha_turno"].notna()]
-    df_prog_mes_m = _base_tnd_m[
-        (_base_tnd_m["fecha_turno"] >= ini_m) & (_base_tnd_m["fecha_turno"] <= fin_m)
-        & (_base_tnd_m["tipo"] == settings.PROGRAMADO)
-    ]
-
-    areas_a_mostrar_m = (
-        [label_to_key[area_sel_mtto]] if area_sel_mtto != "Todas"
-        else list(AREAS_OBJETIVO.keys())
-    )
-    for ak in areas_a_mostrar_m:
-        df_prog_area_m = df_prog_mes_m[df_prog_mes_m["area_key"] == ak]
-        mostrar_tnd(df_prog_area_m, ak, ini_m, fin_m, key_prefix=f"mtto_{ak}")
+        d = d_m if empresa == "Todas" else _de_empresa(empresa)
+        if d.empty:
+            st.warning(f"No hay paros con apoyo de {empresa} en este periodo.")
+        else:
+            s = d.groupby("equipo")["horas"].sum()
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Eventos con apoyo", len(d))
+            c2.metric("Horas totales", f"{d['horas'].sum():.1f} h")
+            c3.metric("Equipos que causan el 80%", len(vitales_80(s)))
+            color = COLOR_EMPRESA.get(empresa, "#2563EB")
+            st.plotly_chart(pareto_fig(s, "Equipo", color=color), width="stretch",
+                            key="mtto_par")
+            st.caption("**Pocos vitales (≈80%):** " + ", ".join(map(str, vitales_80(s))))
+            if empresa == "Todas":
+                rep = d["apoyo"].value_counts()
+                st.caption(" · ".join(f"{k}: {v}" for k, v in rep.items()))
