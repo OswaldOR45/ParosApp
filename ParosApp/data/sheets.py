@@ -314,3 +314,64 @@ def guardar_acr(registro: dict):
         )
     ws.append_row(fila, value_input_option="USER_ENTERED")
     leer_acrs.clear()
+
+
+# --- ROL DE TURNOS: excepciones de horas trabajadas por grupo (para TND) ---
+@st.cache_data(ttl=120)
+def leer_rol_turnos() -> pd.DataFrame:
+    """
+    Devuelve columnas: fecha (date), grupo (A/B/C), horas (float), nota.
+    Si la hoja no existe o está vacía -> DataFrame vacío (todo es turno normal).
+    Para la misma fecha+grupo se queda la ÚLTIMA fila capturada.
+    """
+    vacio = pd.DataFrame(columns=["fecha", "grupo", "horas", "nota"])
+    try:
+        valores = _ws(settings.HOJA_ROL_TURNOS).get_all_values()
+    except Exception:
+        return vacio
+    if len(valores) < 2:
+        return vacio
+    enc = [_norm(h) for h in valores[0]]
+    df = pd.DataFrame([r + [""] * (len(enc) - len(r)) for r in valores[1:]], columns=enc)
+    if not {"FECHA", "GRUPO", "HORAS"} <= set(df.columns):
+        return vacio
+
+    fecha = pd.to_datetime(df["FECHA"], format="%Y-%m-%d", errors="coerce")
+    fecha = fecha.fillna(pd.to_datetime(df["FECHA"], dayfirst=True, errors="coerce"))
+    out = pd.DataFrame({
+        "fecha": fecha.dt.date,
+        "grupo": df["GRUPO"].astype(str).str.strip().str.upper(),
+        "horas": pd.to_numeric(df["HORAS"].astype(str).str.replace(",", "."),
+                               errors="coerce"),
+        "nota": df.get("NOTA", pd.Series("", index=df.index)).astype(str).str.strip(),
+    })
+    out = out.dropna(subset=["fecha", "horas"])
+    out = out[out["grupo"] != ""]
+    return out.drop_duplicates(["fecha", "grupo"], keep="last").reset_index(drop=True)
+
+
+def guardar_rol_turnos(filas: list[dict]) -> int:
+    """
+    Agrega excepciones de turno. filas = [{"fecha": date, "grupo": "A",
+    "horas": 12, "nota": "..."}]. Crea la hoja si no existe. Devuelve cuántas
+    filas escribió.
+    """
+    if not filas:
+        return 0
+    try:
+        ws = _ws(settings.HOJA_ROL_TURNOS)
+    except Exception:
+        ws = _get_spreadsheet().add_worksheet(
+            title=settings.HOJA_ROL_TURNOS, rows=1000,
+            cols=len(settings.ENCABEZADOS_ROL))
+        ws.append_row(settings.ENCABEZADOS_ROL, value_input_option="RAW")
+
+    from utils.tiempo import ahora_mx
+    sello = ahora_mx().strftime("%Y-%m-%d %H:%M:%S")
+    datos = [[f["fecha"].strftime("%Y-%m-%d"), str(f["grupo"]).upper(),
+              f["horas"], f.get("nota", ""), sello] for f in filas]
+    # RAW: la fecha se guarda como texto AAAA-MM-DD y no depende del idioma
+    # de la hoja de cálculo.
+    ws.append_rows(datos, value_input_option="RAW")
+    leer_rol_turnos.clear()
+    return len(datos)

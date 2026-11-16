@@ -151,3 +151,17 @@ FIELD_TO_HEADER_ACR = {
     "firma_produccion":    "FIRMA_PRODUCCION",
     "timestamp":           "TIMESTAMP",
 }
+# ---------------------------------------------------------------------------
+# ROL DE TURNOS (excepciones para el TND)
+# Por defecto cada grupo trabaja 1 turno de 8 h al día. En esta hoja SOLO se
+# capturan las excepciones:
+#   HORAS = 0   -> el grupo no trabajó (vacaciones / descanso)
+#   HORAS = 12  -> turno de 12 h (cubriendo a un grupo de vacaciones)
+#   HORAS = 16  -> doble turno
+# Si hay varias filas para la misma FECHA + GRUPO, manda la ÚLTIMA (así se
+# corrige un error capturando de nuevo). La hoja se crea sola la primera vez
+# que se guarda una excepción desde la app.
+# ---------------------------------------------------------------------------
+HOJA_ROL_TURNOS = "ROL_TURNOS"
+HORAS_TURNO_NORMAL = 8
+ENCABEZADOS_ROL = ["FECHA", "GRUPO", "HORAS", "NOTA", "REGISTRADO"]

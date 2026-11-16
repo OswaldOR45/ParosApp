@@ -15,8 +15,11 @@ Dos pestañas:
                     ambas. Los tramos hijo se suman al padre (tiempo total del
                     evento). Sin TND: mantenimiento no produce.
 
-TND = 480 min (turno de 8 h) − minutos de paros PROGRAMADOS de esa línea, ese
-grupo y ese día de turno. Un paro de "Línea 1 y 2" resta de las DOS líneas.
+TND = minutos que trabajó el grupo ese día − minutos de paros PROGRAMADOS de
+esa línea, ese grupo y ese día de turno. Por defecto el grupo trabaja 480 min
+(8 h); las excepciones (vacaciones = 0, turnos de 12 h, dobles) se capturan
+en la hoja ROL_TURNOS desde el formulario de esta misma vista. Un paro de
+"Línea 1 y 2" resta de las DOS líneas.
 """
 import re
 import unicodedata
@@ -27,8 +30,10 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from config import settings
-from data.sheets import leer_paros, cargar_catalogos
-from utils.tiempo import hhmm_a_horas
+from data.sheets import (leer_paros, cargar_catalogos, leer_rol_turnos,
+                         guardar_rol_turnos)
+from utils.tiempo import hhmm_a_horas, hoy_mx
+from utils.auth import verificar_password
 from utils.filtros import (selector_periodo, filtrar_fechas, filtrar_linea,
                            filtrar_grupo, expandir_por_linea, marcar_hijos,
                            pareto_fig, vitales_80, barras_comparadas,
@@ -117,9 +122,23 @@ def _area_key(valor_area: str) -> str | None:
 # ---------------------------------------------------------------------------
 # TND
 # ---------------------------------------------------------------------------
+def base_turnos(rol: pd.DataFrame) -> dict:
+    """{(fecha, grupo): minutos trabajados} solo para las EXCEPCIONES del rol."""
+    if rol is None or rol.empty:
+        return {}
+    return {(r.fecha, r.grupo): float(r.horas) * 60 for r in rol.itertuples()}
+
+
 def calcular_tnd(df_prog: pd.DataFrame, area_key: str, fecha_ini: ddate,
-                 fecha_fin: ddate, grupos: list, lineas: list) -> pd.DataFrame:
-    """TND por (día de turno, línea, grupo). df_prog = paros PROGRAMADOS del área."""
+                 fecha_fin: ddate, grupos: list, lineas: list,
+                 bases: dict | None = None) -> pd.DataFrame:
+    """
+    TND por (día de turno, línea, grupo).
+    Base = minutos que el grupo trabajó ese día: 480 por defecto, o lo que
+    diga ROL_TURNOS (0 = no trabajó, 720 = turno de 12 h, 960 = doble).
+    Los días con base 0 se marcan como descanso y NO cuentan en promedios.
+    """
+    bases = bases or {}
     lineas_area = [l for l in AREAS_OBJETIVO[area_key]["lineas"] if l in lineas]
     filas = []
     for dia in pd.date_range(fecha_ini, fecha_fin, freq="D"):
@@ -128,45 +147,70 @@ def calcular_tnd(df_prog: pd.DataFrame, area_key: str, fecha_ini: ddate,
         for linea in lineas_area:
             d_ln = del_dia[del_dia["linea"].isin([linea, LINEA_AMBAS])]
             for grupo in grupos:
+                base = bases.get((dia_d, grupo), float(MIN_TURNO))
                 d = d_ln[d_ln["turno"] == grupo]
-                # Tope de 480 min: un paro programado de más de 8 h registrado
-                # en un solo turno no puede dejar un TND negativo.
-                perdidos = min(float(d["min_prog"].sum()), MIN_TURNO)
+                # Tope = minutos trabajados: un paro programado más largo que
+                # el turno no puede dejar un TND negativo.
+                perdidos = min(float(d["min_prog"].sum()), base)
                 filas.append({
                     "Fecha": dia_d, "Línea": linea, "Grupo": grupo,
+                    "Turno (h)": round(base / 60, 1),
                     "Min. programados": round(perdidos),
-                    "TND (h)": round((MIN_TURNO - perdidos) / 60, 2),
+                    "TND (h)": round((base - perdidos) / 60, 2),
                     "Motivos": ", ".join(sorted(set(d["motivo"]) - {""})),
+                    "Descanso": base == 0,
+                    "Min. registrados": round(float(d["min_prog"].sum())),
                 })
     return pd.DataFrame(filas)
 
 
 def _heatmap_tnd(tabla: pd.DataFrame, label: str, varias_lineas: bool):
     t = tabla.copy()
-    t["Fila"] = ("Grupo " + t["Grupo"]
-                 + ((" · " + t["Línea"]) if varias_lineas else ""))
+    t["Fila"] = "Grupo " + t["Grupo"] + ((" · " + t["Línea"]) if varias_lineas else "")
     filas = sorted(t["Fila"].unique(), reverse=True)  # A arriba
     fechas = sorted(t["Fecha"].unique())
-    piv = t.pivot_table(index="Fila", columns="Fecha", values="Min. programados",
-                        aggfunc="sum").reindex(index=filas, columns=fechas).fillna(0)
-    mot = t.pivot_table(index="Fila", columns="Fecha", values="Motivos",
-                        aggfunc="first").reindex(index=filas, columns=fechas).fillna("")
-    tnd_h = (MIN_TURNO - piv) / 60
-    # Texto solo en los turnos que perdieron tiempo (el resto queda limpio)
-    texto = tnd_h.round(1).astype(str).where(piv > 0, "")
-    hover = ("<b>%{y}</b> · %{x|%d/%m}<br>TND: %{customdata[0]:.2f} h"
-             "<br>Perdido: %{z:.0f} min<br>%{customdata[1]}<extra></extra>")
-    custom = [[[tnd_h.iat[i, j], mot.iat[i, j] or "Sin paros programados"]
-               for j in range(len(fechas))] for i in range(len(filas))]
+
+    def _piv(col):
+        return t.pivot_table(index="Fila", columns="Fecha", values=col,
+                             aggfunc="first").reindex(index=filas, columns=fechas)
+
+    perd, base, tnd = _piv("Min. programados"), _piv("Turno (h)"), _piv("TND (h)")
+    mot = _piv("Motivos").fillna("")
+    z = perd.where(base > 0)          # descanso -> celda vacía (sin color)
+
+    texto, custom = [], []
+    for i in range(len(filas)):
+        fila_txt, fila_cd = [], []
+        for j in range(len(fechas)):
+            b, p, v = base.iat[i, j], perd.iat[i, j], tnd.iat[i, j]
+            if pd.isna(b):
+                fila_txt.append(""); fila_cd.append(["", "", ""]); continue
+            if b == 0:
+                fila_txt.append("D")
+                fila_cd.append([0, 0, "No trabajó (descanso / vacaciones)"])
+                continue
+            normal = abs(b - 8) < 0.01
+            if p > 0:
+                fila_txt.append(f"{v:.1f}" if normal else f"{v:.1f}/{b:g}")
+            else:
+                fila_txt.append("" if normal else f"{b:g}h")
+            fila_cd.append([v, b, mot.iat[i, j] or "Sin paros programados"])
+        texto.append(fila_txt); custom.append(fila_cd)
+
     fig = go.Figure(go.Heatmap(
-        z=piv.values, x=[pd.Timestamp(f) for f in fechas], y=filas,
-        text=texto.values, texttemplate="%{text}", textfont=dict(size=10),
-        customdata=custom, hovertemplate=hover,
+        z=z.values, x=[pd.Timestamp(f) for f in fechas], y=filas,
+        text=texto, texttemplate="%{text}", textfont=dict(size=10),
+        customdata=custom,
+        hovertemplate=("<b>%{y}</b> · %{x|%d/%m}<br>Turno: %{customdata[1]} h"
+                       "<br>TND: %{customdata[0]} h<br>Perdido: %{z:.0f} min"
+                       "<br>%{customdata[2]}<extra></extra>"),
         colorscale=ESCALA_TND, zmin=0, zmax=MIN_TURNO,
         xgap=2, ygap=2, colorbar=dict(title="Min<br>perdidos", thickness=12),
     ))
-    fig.update_layout(title=f"{label} — TND por día (número = horas disponibles)",
-                      height=140 + 36 * len(filas), margin=dict(t=50, b=40, l=120, r=10),
+    fig.update_layout(title=f"{label} — TND por día",
+                      height=140 + 36 * len(filas),
+                      margin=dict(t=50, b=40, l=120, r=10),
+                      plot_bgcolor="#E5E7EB",   # gris = descanso
                       xaxis=dict(tickformat="%d/%m", showgrid=False, automargin=True,
                                  dtick=86400000 * (1 if len(fechas) <= 35 else 7)),
                       yaxis=dict(showgrid=False, automargin=True))
@@ -174,56 +218,168 @@ def _heatmap_tnd(tabla: pd.DataFrame, label: str, varias_lineas: bool):
 
 
 def mostrar_tnd(df_prog: pd.DataFrame, area_key: str, ini: ddate, fin: ddate,
-                grupos: list, lineas: list, key: str):
+                grupos: list, lineas: list, key: str, bases: dict | None = None):
     label = AREAS_OBJETIVO[area_key]["label"]
-    tabla = calcular_tnd(df_prog, area_key, ini, fin, grupos, lineas)
+    tabla = calcular_tnd(df_prog, area_key, ini, fin, grupos, lineas, bases)
     if tabla.empty:
         st.info(f"{label}: no aplica para la línea seleccionada.")
         return
 
     st.markdown(f"#### {label}")
     varias_lineas = tabla["Línea"].nunique() > 1
+    trab = tabla[~tabla["Descanso"]]
 
-    # 1) Tarjetas: TND promedio por turno, por grupo (y línea)
-    resumen = (tabla.groupby(["Grupo", "Línea"])
-               .agg(prom=("TND (h)", "mean"),
-                    afectados=("Min. programados", lambda x: int((x > 0).sum())),
+    # Paros registrados por un grupo en un día que, según ROL_TURNOS, no
+    # trabajó: o el rol está mal o el paro tiene el grupo equivocado.
+    conflicto = tabla[tabla["Descanso"] & (tabla["Min. registrados"] > 0)]
+    if not conflicto.empty:
+        casos = (conflicto.drop_duplicates(["Fecha", "Grupo"])
+                 .apply(lambda r: f"{r['Fecha']:%d/%m} grupo {r['Grupo']}", axis=1))
+        st.warning("Hay paros programados capturados por un grupo marcado como "
+                   "**no trabajó**: " + ", ".join(casos) + ". Revisa el grupo del "
+                   "paro o el registro de turnos especiales; esos minutos no se "
+                   "están restando.", icon="⚠️")
+
+    # 1) Tarjetas por grupo: % disponibilidad = horas netas / horas trabajadas.
+    #    Con turnos de 8 y 12 h mezclados, el % es comparable; el promedio de
+    #    horas por turno no.
+    resumen = (trab.groupby(["Línea", "Grupo"])
+               .agg(base_h=("Turno (h)", "sum"), tnd_h=("TND (h)", "sum"),
                     turnos=("Fecha", "size"),
-                    perdidas=("Min. programados", "sum"))
+                    afectados=("Min. programados", lambda x: int((x > 0).sum())),
+                    especiales=("Turno (h)", lambda x: int((x != 8).sum())))
                .reset_index())
-    for linea, r_ln in resumen.groupby("Línea", sort=True):
+    descansos = tabla[tabla["Descanso"]].groupby(["Línea", "Grupo"]).size()
+
+    for linea in sorted(tabla["Línea"].unique()):
         if varias_lineas:
             st.caption(f"**{linea}**")
-        cols = st.columns(len(r_ln))
-        for col, (_, r) in zip(cols, r_ln.iterrows()):
-            disp = r["prom"] / 8 * 100
-            col.metric(f"Grupo {r['Grupo']}", f"{r['prom']:.2f} h",
-                       delta=f"{r['prom'] - 8:+.2f} h vs 8 h" if r["perdidas"] else "Turno completo",
-                       delta_color="normal" if r["perdidas"] else "off",
-                       help=f"Disponibilidad promedio {disp:.1f}% · "
-                            f"{r['afectados']} de {r['turnos']} turnos con paro programado · "
-                            f"{r['perdidas'] / 60:.1f} h programadas en el periodo")
+        r_ln = resumen[resumen["Línea"] == linea].set_index("Grupo")
+        cols = st.columns(len(grupos))
+        for col, g in zip(cols, grupos):
+            n_desc = int(descansos.get((linea, g), 0))
+            if g not in r_ln.index:
+                col.metric(f"Grupo {g}", "—", help=f"No trabajó en el periodo ({n_desc} días)")
+                continue
+            r = r_ln.loc[g]
+            perd_h = r["base_h"] - r["tnd_h"]
+            disp = r["tnd_h"] / r["base_h"] * 100 if r["base_h"] else 0
+            extra = []
+            if r["especiales"]:
+                extra.append(f"{r['especiales']} turno(s) de 12 h o más")
+            if n_desc:
+                extra.append(f"{n_desc} día(s) sin trabajar")
+            col.metric(
+                f"Grupo {g}", f"{disp:.1f} %",
+                delta=f"−{perd_h:.1f} h programadas" if perd_h > 0 else "Sin paros programados",
+                delta_color="inverse" if perd_h > 0 else "off",
+                help=(f"Disponibilidad = horas netas / horas trabajadas. "
+                      f"{r['tnd_h']:.1f} h netas de {r['base_h']:.0f} h trabajadas en "
+                      f"{r['turnos']} turnos · {r['afectados']} con paro programado"
+                      + (" · " + " · ".join(extra) if extra else "")))
 
     # 2) Mapa de calor
     st.plotly_chart(_heatmap_tnd(tabla, label, varias_lineas), width="stretch",
                     key=f"{key}_heat")
+    st.caption("Blanco = turno completo · azul = tiempo programado perdido "
+               "(el número son las horas que quedaron) · **12h**/**16h** = turno "
+               "especial · **D** = no trabajó.")
 
     # 3) Solo los turnos que perdieron tiempo
-    afect = tabla[tabla["Min. programados"] > 0].sort_values(["Fecha", "Grupo", "Línea"])
+    afect = trab[trab["Min. programados"] > 0].sort_values(["Fecha", "Grupo", "Línea"])
     with st.expander(f"Turnos con paro programado · {len(afect)}"):
         if afect.empty:
-            st.caption("Ningún turno tuvo paros programados en el periodo: TND = 8 h en todos.")
+            st.caption("Ningún turno tuvo paros programados en el periodo.")
         else:
-            vista = afect.assign(Fecha=pd.to_datetime(afect["Fecha"]).dt.strftime("%d/%m/%Y"))
-            st.dataframe(vista[["Fecha", "Grupo", "Línea", "TND (h)",
-                                "Min. programados", "Motivos"]],
+            vista = afect.assign(
+                Fecha=pd.to_datetime(afect["Fecha"]).dt.strftime("%d/%m/%Y"),
+                **{"Disponible": afect["TND (h)"] / afect["Turno (h)"] * 100})
+            st.dataframe(vista[["Fecha", "Grupo", "Línea", "Turno (h)", "TND (h)",
+                                "Disponible", "Min. programados", "Motivos"]],
                          width="stretch", hide_index=True,
-                         column_config={"TND (h)": st.column_config.ProgressColumn(
-                             "TND (h)", min_value=0, max_value=8, format="%.2f h")})
+                         column_config={"Disponible": st.column_config.ProgressColumn(
+                             "Disponible", min_value=0, max_value=100, format="%.0f%%")})
         st.download_button("⬇️ Descargar TND día por día (CSV)",
-                           tabla.to_csv(index=False).encode("utf-8-sig"),
+                           tabla.drop(columns=["Descanso", "Min. registrados"])
+                                .to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"TND_{label}.csv", mime="text/csv",
                            key=f"{key}_csv")
+
+
+def formulario_rol_turnos(rol: pd.DataFrame):
+    """Captura de excepciones de turno (vacaciones, 12 h, dobles, descansos)."""
+    with st.expander("🗓️ Turnos especiales (vacaciones, 12 h, doble turno)"):
+        st.caption("Por defecto cada grupo trabaja **8 h al día**. Registra aquí "
+                   "solo los días distintos para que el TND sea correcto. Si te "
+                   "equivocas, vuelve a registrar el mismo día y grupo: manda el último.")
+        # El flag va en una llave propia: el valor de un text_input se borra
+        # en cuanto el campo deja de dibujarse, y eso volvería a bloquear.
+        if not st.session_state.get("rol_autorizado"):
+            pwd = st.text_input("Contraseña", type="password", key="rol_pwd",
+                                help="La de administrador (rol_password o mantenimiento_password).")
+            if pwd:
+                if verificar_password("rol", pwd) or verificar_password("mantenimiento", pwd):
+                    st.session_state["rol_autorizado"] = True
+                    st.rerun()
+                else:
+                    st.error("Contraseña incorrecta.")
+        else:
+            caso = st.segmented_control(
+                "Caso", ["Vacaciones de un grupo", "Día específico"],
+                default="Vacaciones de un grupo", key="rol_caso") or "Vacaciones de un grupo"
+            hoy = hoy_mx().date()
+            rango = st.date_input("Del / al", value=(hoy, hoy), format="DD/MM/YYYY",
+                                  key="rol_rango")
+            if not (isinstance(rango, (tuple, list)) and len(rango) == 2):
+                st.caption("Elige también la fecha final.")
+                ini, fin = (rango[0], rango[0]) if rango else (hoy, hoy)
+            else:
+                ini, fin = rango
+            dias = pd.date_range(ini, fin, freq="D").date
+
+            filas = []
+            if caso == "Vacaciones de un grupo":
+                g_vac = st.segmented_control("Grupo de vacaciones", GRUPOS, key="rol_gvac")
+                if g_vac:
+                    otros = [g for g in GRUPOS if g != g_vac]
+                    st.info(f"Se registrará: grupo **{g_vac} = 0 h** y grupos "
+                            f"**{' y '.join(otros)} = 12 h** durante {len(dias)} día(s).")
+                    for d in dias:
+                        filas.append({"fecha": d, "grupo": g_vac, "horas": 0,
+                                      "nota": f"Vacaciones {g_vac}"})
+                        for g in otros:
+                            filas.append({"fecha": d, "grupo": g, "horas": 12,
+                                          "nota": f"Cubre vacaciones {g_vac}"})
+            else:
+                c1, c2 = st.columns(2)
+                with c1:
+                    g_sel = st.segmented_control("Grupo", GRUPOS, key="rol_g")
+                with c2:
+                    h_sel = st.segmented_control(
+                        "Horas trabajadas", ["0 (no trabajó)", "8 (normal)", "12", "16 (doble)"],
+                        key="rol_h")
+                nota = st.text_input("Nota (opcional)", key="rol_nota")
+                if g_sel and h_sel:
+                    h = int(h_sel.split()[0])
+                    filas = [{"fecha": d, "grupo": g_sel, "horas": h, "nota": nota}
+                             for d in dias]
+
+            if filas and st.button(f"Guardar {len(filas)} registro(s)", type="primary",
+                                   key="rol_guardar"):
+                try:
+                    n = guardar_rol_turnos(filas)
+                    st.toast(f"{n} registro(s) guardados en {settings.HOJA_ROL_TURNOS}", icon="✅")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"No se pudo guardar: {e}")
+
+        if not rol.empty:
+            st.markdown("**Excepciones registradas (últimos 60 días)**")
+            lim = hoy_mx().date() - timedelta(days=60)
+            v = rol[rol["fecha"] >= lim].sort_values(["fecha", "grupo"], ascending=[False, True])
+            st.dataframe(v.rename(columns={"fecha": "Fecha", "grupo": "Grupo",
+                                           "horas": "Horas", "nota": "Nota"}),
+                         width="stretch", hide_index=True)
 
 
 def _paretos_lado_a_lado(dfs: dict, colores: dict, eje: str, cat: str, key: str):
@@ -364,9 +520,8 @@ with tab_sup:
     # --- TND -----------------------------------------------------------
     st.divider()
     st.subheader(f"TND — {etq_s}")
-    st.caption("Horas disponibles por turno (8 h menos paros programados). "
-               "Celdas en blanco = turno completo; entre más oscuro, más tiempo "
-               "programado perdido. Pasa el cursor sobre una celda para ver el motivo.")
+    st.caption("Horas disponibles por turno: horas trabajadas por el grupo menos "
+               "paros programados. Pasa el cursor sobre una celda para ver el motivo.")
 
     base = df_areas[df_areas["fecha_turno"].notna()]
     ft = pd.to_datetime(base["fecha_turno"])
@@ -379,9 +534,13 @@ with tab_sup:
     if (fin_s - ini_s).days > 62:
         st.info("Periodo largo: el mapa de calor puede verse comprimido. "
                 "Usa «Este mes» o un rango para ver el detalle por día.")
+    rol = leer_rol_turnos()
+    bases = base_turnos(rol)
     for ak in areas_tnd:
         mostrar_tnd(d_prog[d_prog["area_key"] == ak], ak, ini_s, fin_s,
-                    grupos_tnd, lineas_tnd, key=f"tnd_{ak}")
+                    grupos_tnd, lineas_tnd, key=f"tnd_{ak}", bases=bases)
+
+    formulario_rol_turnos(rol)
 
 # ===========================================================================
 # PESTAÑA MANTENIMIENTO
