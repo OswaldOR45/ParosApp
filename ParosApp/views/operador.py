@@ -295,11 +295,15 @@ st.subheader("2 · Línea")
 linea = st.pills("Línea", cat["lineas"], key=f"linea_{v}",
                  label_visibility="collapsed")
 
-st.subheader("3 · Área")
+st.subheader("3 · Área donde se originó el paro")
+st.caption("¿Dónde está la CAUSA? Ej.: no hay harina porque el molino falló → MOLIENDA.")
 area = st.pills("Área", cat["areas"], key=f"area_{v}",
                 label_visibility="collapsed")
+if area and cat.get("descrip_area", {}).get(area):
+    st.caption(f"📍 **{area}:** {cat['descrip_area'][area]}")
 
-st.subheader("4 · Equipo / Área afectada")
+st.subheader("4 · Equipo que se detuvo")
+st.caption("¿Qué dejó de producir? Normalmente el Extrusor (la línea).")
 equipo = st.pills("Equipo", cat["equipos"], key=f"equipo_{v}",
                   label_visibility="collapsed")
 
