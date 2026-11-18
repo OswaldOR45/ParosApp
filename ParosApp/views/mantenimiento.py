@@ -1,362 +1,309 @@
 """
-VISTA 2 — MANTENIMIENTO (Complementar paro)
-Pendientes = paros con ¿NECESITA ACR? != NO, y SIN cierre en ACRS para la
-empresa actual. Un paro "AMBOS" queda pendiente para RSI hasta que RSI
-cierre su parte, y pendiente para STEO hasta que STEO cierre la suya,
-de forma independiente.
-Orden de Trabajo es OPCIONAL (hay paros sin orden de mtto).
-Aquí SÍ se permite selectbox: es para técnicos, no para piso.
+VISTA 2 — MANTENIMIENTO · Cerrar paros (ACR)
+
+Flujo en 3 pasos:
+  1. Elegir el paro pendiente (el más antiguo arriba).
+  2. Decir qué se hizo: componente(s), tipo de intervención, horas, causa raíz.
+  3. Firma del supervisor de producción.
+
+Pendiente = paro con ¿NECESITA ACR? = RSI / STEO / AMBOS (o SÍ legacy) que aún
+no tiene fila en ACRS para la empresa que lo atiende. Un paro AMBOS queda
+pendiente para cada empresa por separado. Los paros aún en curso no aparecen.
 """
-from datetime import date as _date, datetime as _datetime
+from datetime import date as _date
 
 import pandas as pd
 import streamlit as st
 
 from data.sheets import (leer_paros, leer_acrs, guardar_acr, cargar_catalogos,
-                         leer_componentes, agregar_componente,
-                         leer_hijos_de_paro)
+                         leer_componentes, agregar_componente, leer_hijos_de_paro)
 from utils.auth import requiere_empresa, verificar_password
-from utils.tiempo import duracion_hhmm, total_minutos, sumar_duraciones_hhmm, ahora_mx
+from utils.mtto import (AYUDA_TIPOS, SIN_COMPONENTE, TIPO_REVISION, eventos, fmt_h,
+                        pendientes)
+from utils.tiempo import duracion_hhmm, total_minutos, ahora_mx
 
-# Pide contraseña antes de mostrar o modificar cualquier dato.
-# Cada empresa entra con su contraseña y solo ve los paros que le tocan
-# (RSI -> RSI+AMBOS, STEO -> STEO+AMBOS, ADMIN -> todojunto)
 EMPRESA = requiere_empresa()
 
-st.title("Mantenimiento · Completar paros")
+st.title("Mantenimiento · Cerrar paros")
 
 df = leer_paros()
 if df.empty:
     st.info("Aún no hay paros registrados.")
     st.stop()
 
-df = df.copy()
-acrs = leer_acrs()  # historial de cierres por empresa
+acrs = leer_acrs()
+ev = eventos(df)
+pend = pendientes(ev, acrs, EMPRESA)
 
-# Fecha del paro a partir del TIMESTAMP (momento de registro).
-if "timestamp" in df.columns:
-    df["fecha"] = (pd.to_datetime(df["timestamp"], errors="coerce")
-                   .dt.strftime("%Y-%m-%d").fillna(""))
+# ---------------------------------------------------------------------------
+# PASO 1 · Elegir el paro
+# ---------------------------------------------------------------------------
+etiqueta_emp = "todas las empresas" if EMPRESA == "ADMIN" else EMPRESA
+c1, c2, c3 = st.columns(3)
+c1.metric("Pendientes", len(pend))
+c2.metric("Más antiguo", f"{pend['dias'].max()} días" if len(pend) else "—")
+c3.metric("Con más de 3 días", int((pend["dias"] > 3).sum()) if len(pend) else 0)
 
-acr = df.get("necesita_acr", "").fillna("").astype(str).str.strip().str.upper()
-
-# Valores que mandan el paro a la cola de Mantenimiento:
-#   - "SI"/"SÍ"            -> paros antiguos (esquema previo a Ola 1)
-#   - "RSI"/"STEO"/"AMBOS" -> nuevos: a quién llamó el operador
-# "NO" o cualquier otra cosa queda fuera (paro operativo sin intervención).
-LEGACY = {"SI", "SÍ"}
-if EMPRESA == "RSI":
-    VISIBLES = {"RSI", "AMBOS"} | LEGACY
-elif EMPRESA == "STEO":
-    VISIBLES = {"STEO", "AMBOS"} | LEGACY
-else:  # ADMIN
-    VISIBLES = {"RSI", "STEO", "AMBOS"} | LEGACY
-
-# --- Pendientes: cruce con ACRS --------------------------------------------
-# Un paro está PENDIENTE para una empresa si no tiene fila en ACRS para esa
-# combinación (id_paro, empresa). ADMIN ve pendiente si falta CUALQUIERA de
-# las empresas que le tocan (para que pueda cerrar lo que sea que falte).
-if not acrs.empty and "id_paro" in acrs.columns and "empresa" in acrs.columns:
-    cerrados_set = set(zip(acrs["id_paro"].astype(str), acrs["empresa"].astype(str).str.upper()))
-else:
-    cerrados_set = set()
-
-def _falta_cierre(row) -> bool:
-    pid = str(row.get("id_paro", ""))
-    apoyo = str(row.get("necesita_acr", "")).strip().upper()
-
-    if EMPRESA in ("RSI", "STEO"):
-        return (pid, EMPRESA) not in cerrados_set
-
-    # ADMIN: pendiente si falta el cierre de cualquier empresa involucrada
-    if apoyo == "AMBOS":
-        return (pid, "RSI") not in cerrados_set or (pid, "STEO") not in cerrados_set
-    elif apoyo in ("RSI", "STEO"):
-        return (pid, apoyo) not in cerrados_set
-    else:  # legacy SI/SÍ -> no sabemos quién, basta con que exista 1 cierre
-        return not any(pid == c[0] for c in cerrados_set)
-
-mask_visible = acr.isin(VISIBLES)
-df_visible = df[mask_visible].copy()
-
-# Excluir tramos hijos (ES_CONTINUACION == SÍ / SI): mantenimiento solo ve el padre.
-# Los hijos heredan el cierre automáticamente cuando se cierra el padre.
-# Se compara contra ambas variantes porque Google Sheets a veces elimina el acento.
-if "es_continuacion" in df_visible.columns:
-    es_hijo = df_visible["es_continuacion"].fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
-    df_visible = df_visible[~es_hijo]
-
-# Excluir paros aún activos: no tienen hora de fin real todavía.
-# Mantenimiento solo ve paros completamente cerrados.
-if "paro_en_curso" in df_visible.columns:
-    en_curso = df_visible["paro_en_curso"].fillna("").str.strip().str.upper().isin({"SÍ", "SI"})
-    df_visible = df_visible[~en_curso]
-
-pendientes = df_visible[df_visible.apply(_falta_cierre, axis=1)]
-
-etiqueta = "todas las empresas" if EMPRESA == "ADMIN" else EMPRESA
-st.subheader(f"Paros pendientes · {etiqueta} ({len(pendientes)})")
-
-cols_vista = [c for c in ["fecha", "id_paro", "turno", "linea", "area", "equipo",
-                          "motivo", "necesita_acr", "descripcion"]
-              if c in pendientes.columns]
-st.dataframe(
-    pendientes[cols_vista],
-    use_container_width=True,
-    hide_index=True,
-    column_config={
-        "fecha": st.column_config.TextColumn("Fecha"),
-        "necesita_acr": st.column_config.TextColumn("Apoyo solicitado"),
-    },
-)
-
-if pendientes.empty:
-    st.success("No hay paros pendientes de causa raíz.")
+if pend.empty:
+    st.success(f"Sin paros pendientes para {etiqueta_emp}. ¡Todo cerrado!")
     st.stop()
 
-st.divider()
-st.subheader("Completar un paro")
+with st.expander(f"Ver lista de pendientes · {etiqueta_emp}", expanded=False):
+    tabla = pend.assign(
+        fecha_txt=pend["fecha"].dt.strftime("%d/%m %H:%M"),
+        dur=pend["h_paro"].apply(fmt_h),
+        faltan_txt=pend["faltan"].str.join(" y "),
+    )
+    st.dataframe(
+        tabla[["dias", "fecha_txt", "linea", "equipo", "motivo", "dur",
+               "faltan_txt", "descripcion", "id_paro"]],
+        hide_index=True, width="stretch",
+        column_config={
+            "dias": st.column_config.NumberColumn("Días", help="Días desde el paro"),
+            "fecha_txt": "Fecha", "linea": "Línea", "equipo": "Equipo",
+            "motivo": "Motivo", "dur": "Duración",
+            "faltan_txt": "Falta cerrar", "descripcion": "Descripción",
+            "id_paro": "ID",
+        },
+    )
 
-paro_id = st.selectbox("ID de paro", pendientes["id_paro"].tolist())
 
-fila_paro = pendientes[pendientes["id_paro"] == paro_id].iloc[0]
-equipo_paro = str(fila_paro.get("equipo", "")).strip()
-apoyo_paro = str(fila_paro.get("necesita_acr", "")).strip()
-st.caption(f"Equipo del paro: **{equipo_paro or '—'}** · "
-           f"Apoyo solicitado: **{apoyo_paro or '—'}**")
+def _etiqueta(pid: str) -> str:
+    r = pend.loc[pend["id_paro"] == pid].iloc[0]
+    alerta = "🔴" if r["dias"] > 3 else "🟡" if r["dias"] > 1 else "🟢"
+    fecha = r["fecha"].strftime("%d/%m %H:%M") if pd.notna(r["fecha"]) else "s/f"
+    linea = r["linea"].replace("Línea ", "L") or "—"
+    return (f"{alerta} {fecha} · {linea} · {r['equipo'] or '—'} · "
+            f"{r['motivo'] or '—'} · {fmt_h(r['h_paro'])} h · …{pid[-6:]}")
+    # La etiqueta DEBE ser única: Streamlit identifica la opción por su texto.
 
-# --- Resumen de tramos multi-turno -----------------------------------------
-# Si el paro tiene hijos (ES_CONTINUACION), se muestran todos los tramos
-# con su duración parcial y la duración total acumulada.
-hijos_mtto = leer_hijos_de_paro(paro_id)
-es_multituno = not hijos_mtto.empty
 
-if es_multituno:
-    todos_tramos_mtto = [fila_paro] + [hijos_mtto.iloc[i] for i in range(len(hijos_mtto))]
-    duraciones_mtto = []
-    resumen_mtto = []
-    for tr in todos_tramos_mtto:
-        dur = str(tr.get("dur_noprog") or tr.get("dur_prog") or "").strip()
-        if dur:
-            duraciones_mtto.append(dur)
-        hi  = str(tr.get("ini_noprog") or tr.get("ini_prog") or "—")
-        hf  = str(tr.get("fin_noprog") or tr.get("fin_prog") or "⏳ en curso")
-        resumen_mtto.append({
-            "Grupo":    tr.get("turno", "—"),
-            "Inicio":   hi,
-            "Fin":      hf,
-            "Duración": dur or "—",
-        })
+st.subheader("1 · Elige el paro")
+paro_id = st.selectbox("Paro pendiente (el más antiguo primero)",
+                       pend["id_paro"].tolist(), format_func=_etiqueta,
+                       key="mtto_paro")
+p = pend.loc[pend["id_paro"] == paro_id].iloc[0]
+equipo_paro = p["equipo"]
+apoyo_paro = p["apoyo"]
 
-    dur_total_mtto = sumar_duraciones_hhmm(duraciones_mtto)
+# Ficha del paro: lo que capturó producción, para no tener que buscarlo.
+with st.container(border=True):
+    f1, f2, f3 = st.columns(3)
+    f1.markdown(f"**Línea**  \n{p['linea'] or '—'}")
+    f2.markdown(f"**Equipo / área**  \n{equipo_paro or '—'} · {p['area'] or '—'}")
+    f3.markdown(f"**Duración total**  \n{fmt_h(p['h_paro'])} h"
+                + (f" ({p['n_tramos']} turnos)" if p["n_tramos"] > 1 else ""))
+    f1.markdown(f"**Fecha**  \n{p['fecha']:%d/%m/%Y %H:%M}" if pd.notna(p["fecha"]) else "**Fecha**  \n—")
+    f2.markdown(f"**Motivo**  \n{p['motivo'] or '—'}")
+    f3.markdown(f"**Apoyo pedido**  \n{apoyo_paro or '—'}")
+    st.markdown(f"**Lo que reportó producción:** {p['descripcion'] or '_(sin descripción)_'}")
+    st.caption(f"ID {paro_id} · Grupo {p['turno'] or '—'}")
 
-    with st.expander(
-        f"🔄 Paro multi-turno · {len(todos_tramos_mtto)} tramos · "
-        f"Duración total: **{dur_total_mtto} h**",
-        expanded=True,
-    ):
-        st.info(
-            "Este paro abarcó más de un turno. El ACR cubre el evento completo. "
-            "La duración que debes considerar es la **duración total** indicada arriba.",
-            icon="ℹ️",
-        )
-        st.dataframe(
-            pd.DataFrame(resumen_mtto),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.metric("Duración total del evento", f"{dur_total_mtto} h")
+if p["n_tramos"] > 1:
+    with st.expander(f"Ver los {p['n_tramos']} tramos del paro"):
+        hijos = leer_hijos_de_paro(paro_id)
+        tramos = [p] + [hijos.iloc[i] for i in range(len(hijos))]
+        st.dataframe(pd.DataFrame([{
+            "Grupo": t.get("turno", "—"),
+            "Inicio": t.get("ini_noprog") or t.get("ini_prog") or "—",
+            "Fin": t.get("fin_noprog") or t.get("fin_prog") or "—",
+            "Duración": t.get("dur_noprog") or t.get("dur_prog") or "—",
+        } for t in tramos]), hide_index=True, width="stretch")
 
-# Quién ATIENDE de verdad (se guarda como EMPRESA en la fila de ACRS).
-# RSI/STEO: su propia empresa, automático. ADMIN debe indicar cuál cierra
-# si el paro es AMBOS/legacy (puede cerrar cualquiera de las dos por separado).
+# Empresa que cierra: automática para RSI/STEO; ADMIN elige si hay dos.
 if EMPRESA in ("RSI", "STEO"):
     empresa_atiende = EMPRESA
-else:  # ADMIN
-    apoyo_norm = apoyo_paro.upper()
-    if apoyo_norm in ("RSI", "STEO"):
-        empresa_atiende = apoyo_norm
-    else:  # AMBOS o legacy (SI/SÍ)
-        # Solo ofrece las empresas que AÚN no han cerrado este paro
-        opciones_emp = [e for e in ("RSI", "STEO")
-                        if (str(paro_id), e) not in cerrados_set]
-        empresa_atiende = st.radio(
-            "¿Qué empresa atendió este paro? *",
-            opciones_emp or ["RSI", "STEO"], index=None, horizontal=True,
-            key=f"emp_{paro_id}",
-        )
+elif len(p["faltan"]) == 1:
+    empresa_atiende = p["faltan"][0]
+    st.caption(f"Se cerrará a nombre de **{empresa_atiende}**.")
+else:
+    empresa_atiende = st.radio("¿Qué empresa cierra este paro? *", p["faltan"],
+                               index=None, horizontal=True, key=f"emp_{paro_id}")
 
+# ---------------------------------------------------------------------------
+# PASO 2 · ¿Qué se hizo?
+# ---------------------------------------------------------------------------
+st.subheader("2 · ¿Qué se hizo?")
 cat = cargar_catalogos()
-componentes_eq = leer_componentes(equipo_paro) if equipo_paro else []
+equipos = list(dict.fromkeys(([equipo_paro] if equipo_paro else []) + cat["equipos"]))
+equipo_comp = st.selectbox(
+    "¿En qué equipo está la pieza?", equipos, key=f"eqc_{paro_id}",
+    help="Por defecto, el equipo que capturó producción. Cámbialo si la pieza "
+         "pertenece a otro equipo (p. ej. producción puso Extrusor pero se cambiaron "
+         "sellos del Secador).")
+componentes_eq = leer_componentes(equipo_comp) if equipo_comp else []
 
 OPCION_NUEVO = "➕ Agregar componente nuevo…"
-TIPOS_SIN_COMPONENTE = {"Revisión / Diagnóstico"}
+k_n = f"n_comps_{paro_id}"
+st.session_state.setdefault(k_n, 1)
 
-# --- Formulario dinámico de componentes ------------------------------------
-# Se inicializa con 1 componente. El botón agrega más.
-if f"n_comps_{paro_id}" not in st.session_state:
-    st.session_state[f"n_comps_{paro_id}"] = 1
+with st.popover("¿Qué tipo de intervención elijo?"):
+    for t, d in AYUDA_TIPOS.items():
+        st.markdown(f"**{t}**: {d}.")
+    st.caption("Esto alimenta el cálculo de vida útil de cada pieza: un "
+               "Reemplazo reinicia su reloj; una Reparación o un Ajuste no.")
 
-n_comps = st.session_state[f"n_comps_{paro_id}"]
+_campos = ("comp_sel", "tipo_sel", "comp_nuevo")
 
-st.markdown("**Componentes intervenidos**")
-componentes_data = []  # lista de (componente_sel, componente_nuevo, tipo_int)
 
-for i in range(n_comps):
-    ca, cb, cc = st.columns([3, 2, 0.5])
-    with ca:
-        comp_sel = st.selectbox(
-            f"Componente {i+1}",
-            [None] + componentes_eq + [OPCION_NUEVO],
-            index=0,
-            placeholder="Busca o elige…",
-            key=f"comp_sel_{paro_id}_{i}",
-            label_visibility="collapsed" if i > 0 else "visible",
-        )
-    with cb:
-        tipo_sel = st.selectbox(
-            f"Tipo {i+1}",
-            [None] + cat["tipos_intervencion"],
-            index=0,
-            placeholder="Tipo de intervención…",
-            key=f"tipo_sel_{paro_id}_{i}",
-            label_visibility="collapsed" if i > 0 else "visible",
-        )
-    with cc:
-        if i > 0:
-            if st.button("🗑️", key=f"del_comp_{paro_id}_{i}",
-                         help="Quitar este componente"):
-                st.session_state[f"n_comps_{paro_id}"] -= 1
-                st.rerun()
+def _agregar_fila():
+    st.session_state[k_n] += 1
 
+
+def _quitar_fila(i: int):
+    """Quita el renglón i recorriendo hacia arriba los de abajo."""
+    n = st.session_state[k_n]
+    for j in range(i, n - 1):
+        for c in _campos:
+            sig = f"{c}_{paro_id}_{j + 1}"
+            st.session_state[f"{c}_{paro_id}_{j}"] = st.session_state.get(sig)
+    for c in _campos:
+        st.session_state.pop(f"{c}_{paro_id}_{n - 1}", None)
+    st.session_state[k_n] = n - 1
+
+
+componentes_data = []
+for i in range(st.session_state[k_n]):
+    ca, cb, cc = st.columns([3, 2, 0.6], vertical_alignment="bottom")
+    comp_sel = ca.selectbox(
+        f"Componente {i + 1}", componentes_eq + [OPCION_NUEVO], index=None,
+        placeholder="Busca o elige la pieza…", key=f"comp_sel_{paro_id}_{i}")
+    tipo_sel = cb.selectbox(
+        f"Tipo {i + 1}", cat["tipos_intervencion"], index=None,
+        placeholder="Tipo…", key=f"tipo_sel_{paro_id}_{i}")
+    if st.session_state[k_n] > 1:
+        cc.button("🗑️", key=f"del_comp_{paro_id}_{i}", help="Quitar este renglón",
+                  on_click=_quitar_fila, args=(i,))
     comp_nuevo = ""
     if comp_sel == OPCION_NUEVO:
         comp_nuevo = st.text_input(
-            f"Nombre del nuevo componente {i+1} *",
-            placeholder="Ej.: Empaque de tapa del coater",
-            key=f"comp_nuevo_{paro_id}_{i}",
-        )
-
+            f"Nombre del componente nuevo {i + 1} *",
+            placeholder="Una pieza por nombre. Ej.: Rodamiento lado motor del extrusor",
+            key=f"comp_nuevo_{paro_id}_{i}")
     componentes_data.append((comp_sel, comp_nuevo, tipo_sel))
 
-if st.button("➕ Agregar componente", key=f"add_comp_{paro_id}"):
-    st.session_state[f"n_comps_{paro_id}"] += 1
-    st.rerun()
+st.button("➕ Otro componente", key=f"add_comp_{paro_id}", on_click=_agregar_fila)
 
-# --- Tiempos de la intervención (fuera del form, para mostrar duración viva)
-st.markdown("**Tiempos de la intervención**")
-col_hi, col_hf = st.columns(2)
-with col_hi:
-    hora_ini_int = st.time_input("Hora de inicio *", value=None,
-                                 key=f"hi_int_{paro_id}", step=60)
-with col_hf:
-    hora_fin_int = st.time_input("Hora de fin *", value=None,
-                                 key=f"hf_int_{paro_id}", step=60)
+st.markdown("**Horario de la intervención**")
+hi_col, hf_col, dur_col = st.columns(3)
+hora_ini_int = hi_col.time_input("Inicio *", value=None, key=f"hi_int_{paro_id}", step=60)
+hora_fin_int = hf_col.time_input("Fin *", value=None, key=f"hf_int_{paro_id}", step=60)
 dur_int_txt = ""
 if hora_ini_int and hora_fin_int:
     dur_int_txt = duracion_hhmm(_date.today(), hora_ini_int, hora_fin_int)
-    st.metric("Duración de la intervención", f"{dur_int_txt} h")
+    dur_col.metric("Duración", f"{dur_int_txt} h")
+    min_int = total_minutos(_date.today(), hora_ini_int, hora_fin_int)
+    if p["h_paro"] > 0 and min_int > p["h_paro"] * 60 + 1:
+        st.warning(f"La intervención ({dur_int_txt} h) dura más que el paro "
+                   f"({fmt_h(p['h_paro'])} h). Revisa las horas antes de firmar.")
 
-with st.form("completar"):
-    causa_r = st.text_input("Causa raíz *")
-    accion = st.text_area("Acción realizada", height=80)
-    refaccion = st.text_input("Refacción utilizada")
-    orden = st.text_input("Orden de Trabajo (opcional)")
+with st.form(f"cerrar_{paro_id}"):
+    causa_r = st.text_input(
+        "Causa raíz *",
+        placeholder="¿Por qué falló? Ej.: rodamiento sin lubricación por graseras tapadas")
+    accion = st.text_area("Acción realizada", height=80,
+                          placeholder="Qué se hizo para dejar el equipo operando")
+    r1, r2 = st.columns(2)
+    refaccion = r1.text_input("Refacción utilizada")
+    orden = r2.text_input("Orden de trabajo (opcional)")
 
-    st.divider()
-    st.markdown("### Firma del supervisor de producción")
-    st.caption("Sin firma no se guarda. Si producción no está de acuerdo con "
-               "los tiempos, corrígelos arriba y vuelvan a firmar.")
-    firma_pwd = st.text_input("Contraseña de producción *", type="password",
-                              help="La teclea el supervisor de producción.")
-
-    enviar = st.form_submit_button("Guardar y cerrar ACR", type="primary",
-                                   use_container_width=True)
+    # -----------------------------------------------------------------------
+    # PASO 3 · Firma
+    # -----------------------------------------------------------------------
+    st.subheader("3 · Firma de producción")
+    st.caption("El supervisor de producción revisa los datos y teclea su "
+               "contraseña. Sin firma no se guarda.")
+    firma_pwd = st.text_input("Contraseña de producción *", type="password")
+    enviar = st.form_submit_button("Guardar y cerrar paro", type="primary",
+                                   width="stretch")
 
 if enviar:
     errores = []
-
-    # --- Validar componentes -----------------------------------------------
     comps_validos = []
-    for i, (comp_sel, comp_nuevo, tipo_sel) in enumerate(componentes_data):
-        num = i + 1
+    for i, (comp_sel, comp_nuevo, tipo_sel) in enumerate(componentes_data, 1):
         if not tipo_sel:
-            errores.append(f"Componente {num}: selecciona el tipo de intervención.")
-            continue
-        requiere_comp = tipo_sel not in TIPOS_SIN_COMPONENTE
-        if requiere_comp and comp_sel is None:
-            errores.append(f"Componente {num}: el tipo '{tipo_sel}' requiere "
-                           f"especificar un componente.")
+            errores.append(f"Componente {i}: elige el tipo de intervención.")
+        elif tipo_sel != TIPO_REVISION and comp_sel is None:
+            errores.append(f"Componente {i}: «{tipo_sel}» requiere indicar la pieza.")
         elif comp_sel == OPCION_NUEVO and not comp_nuevo.strip():
-            errores.append(f"Componente {num}: escribe el nombre del nuevo componente.")
+            errores.append(f"Componente {i}: escribe el nombre de la pieza nueva.")
         else:
             comps_validos.append((comp_sel, comp_nuevo, tipo_sel))
-
-    if not comps_validos and not errores:
-        errores.append("Agrega al menos un componente o tipo de intervención.")
     if not causa_r.strip():
-        errores.append("La causa raíz es obligatoria para cerrar un ACR.")
+        errores.append("La causa raíz es obligatoria.")
     if not hora_ini_int or not hora_fin_int:
-        errores.append("Captura las dos horas de la intervención.")
+        errores.append("Captura la hora de inicio y fin de la intervención.")
     elif total_minutos(_date.today(), hora_ini_int, hora_fin_int) <= 0:
-        errores.append("La duración de la intervención debe ser mayor a 0.")
+        errores.append("La intervención debe durar más de 0 minutos.")
+    if not empresa_atiende:
+        errores.append("Indica qué empresa cierra el paro.")
     if not firma_pwd:
         errores.append("Falta la firma del supervisor de producción.")
     elif not verificar_password("produccion", firma_pwd):
-        errores.append("Contraseña de producción incorrecta. "
-                       "Pide al supervisor que la verifique.")
-    if not empresa_atiende:
-        errores.append("Indica qué empresa atendió el paro (RSI o STEO).")
+        errores.append("Contraseña de producción incorrecta.")
 
     if errores:
         for e in errores:
             st.error(e)
-    else:
-        componentes_finales = []
-        tipos_finales = []
-        for comp_sel, comp_nuevo, tipo_sel in comps_validos:
-            if comp_sel == OPCION_NUEVO:
-                try:
-                    comp_final, era_nuevo = agregar_componente(
-                        equipo_paro, comp_nuevo
-                    )
-                except Exception as e:
-                    st.error(f"No pude agregar el componente: {e}")
-                    st.stop()
-                if not era_nuevo:
-                    st.info(f"Ya existía en el catálogo: «{comp_final}». "
-                            "Se usó el nombre existente.")
-            elif comp_sel is None:
-                comp_final = ""
-            else:
-                comp_final = comp_sel
+        st.stop()
 
-            componentes_finales.append(comp_final)
-            tipos_finales.append(tipo_sel)
+    comps, tipos = [], []
+    for comp_sel, comp_nuevo, tipo_sel in comps_validos:
+        if comp_sel == OPCION_NUEVO:
+            try:
+                comp_final, era_nuevo = agregar_componente(equipo_comp, comp_nuevo)
+            except Exception as e:
+                st.error(f"No pude agregar el componente: {e}")
+                st.stop()
+            if not era_nuevo:
+                st.info(f"Ya existía en el catálogo como «{comp_final}»; se usó ese nombre.")
+        else:
+            comp_final = comp_sel or ""
+        # Componente y tipo SIEMPRE alineados posición a posición; una revisión
+        # sin pieza se guarda como «—» para no desfasar las listas.
+        comps.append(comp_final or SIN_COMPONENTE)
+        tipos.append(tipo_sel)
 
-        componente_str = " | ".join(c for c in componentes_finales if c)
-        tipo_str = " | ".join(tipos_finales)
+    registro = {
+        "id_paro": paro_id,
+        "empresa": empresa_atiende,
+        "causa_raiz": causa_r.strip(),
+        "componente": " | ".join(comps),
+        "tipo_intervencion": " | ".join(tipos),
+        "accion": accion.strip(),
+        "refaccion": refaccion.strip(),
+        "ini_int": hora_ini_int.strftime("%H:%M"),
+        "fin_int": hora_fin_int.strftime("%H:%M"),
+        "dur_int": dur_int_txt,
+        "firma_produccion": "SÍ",
+        "timestamp": ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    if orden.strip():
+        registro["orden_trabajo"] = orden.strip()
+    try:
+        guardar_acr(registro)
+    except Exception as e:
+        st.error(f"Error al guardar: {e}")
+        st.stop()
+    st.session_state.pop(k_n, None)
+    st.session_state.pop("mtto_paro", None)
+    st.toast("Paro cerrado y firmado por producción", icon="✅")
+    st.rerun()
 
-        registro_acr = {
-            "id_paro":           paro_id,
-            "empresa":           empresa_atiende,
-            "causa_raiz":        causa_r.strip(),
-            "componente":        componente_str,
-            "tipo_intervencion": tipo_str,
-            "accion":            accion.strip(),
-            "refaccion":         refaccion.strip(),
-            "ini_int":           hora_ini_int.strftime("%H:%M"),
-            "fin_int":           hora_fin_int.strftime("%H:%M"),
-            "dur_int":           dur_int_txt,
-            "firma_produccion":  "SÍ",
-            "timestamp":         ahora_mx().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        if orden.strip():
-            registro_acr["orden_trabajo"] = orden.strip()
-        try:
-            guardar_acr(registro_acr)
-            st.session_state.pop(f"n_comps_{paro_id}", None)
-            st.toast("Paro completado y firmado por producción", icon="✅")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error al guardar: {e}")
+# ---------------------------------------------------------------------------
+# Últimos cierres (para verificar lo capturado)
+# ---------------------------------------------------------------------------
+if not acrs.empty and "id_paro" in acrs.columns:
+    ult = acrs.copy()
+    if EMPRESA in ("RSI", "STEO") and "empresa" in ult.columns:
+        ult = ult[ult["empresa"].astype(str).str.upper() == EMPRESA]
+    if not ult.empty:
+        with st.expander("Mis últimos 10 cierres"):
+            cols = [c for c in ["timestamp", "id_paro", "empresa", "componente",
+                                "tipo_intervencion", "dur_int", "causa_raiz"] if c in ult.columns]
+            st.dataframe(ult[cols].tail(10).iloc[::-1], hide_index=True,
+                         width="stretch",
+                         column_config={"timestamp": "Cerrado", "id_paro": "ID",
+                                        "empresa": "Empresa", "componente": "Componente",
+                                        "tipo_intervencion": "Tipo", "dur_int": "Duración",
+                                        "causa_raiz": "Causa raíz"})

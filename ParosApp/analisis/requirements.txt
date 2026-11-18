@@ -1,9 +1,8 @@
 numpy>=1.26
 pandas>=2.0
 scipy>=1.11
-reliability>=0.8
+openpyxl>=3.1          # leer el libro (--xlsx) y escribir reporte_confiabilidad.xlsx
 
-# Solo necesarios si vas a leer directo del Sheet con --sheets.
-# Si exportas a CSV desde la app y corres con --csv, no hacen falta.
+# Solo si vas a leer directo del Sheet con --sheets:
 gspread>=6.0
 google-auth>=2.30

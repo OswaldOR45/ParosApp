@@ -1,129 +1,115 @@
 """
 ================================================================================
- analisis_paros.py  —  Motor de análisis de confiabilidad (Etapa 4, provisional)
+ analisis_paros.py  —  Motor de análisis de confiabilidad (v2)
  Plan Maestro · Mantenimiento Preventivo · Planta Pet Food
 --------------------------------------------------------------------------------
- Lee los datos capturados por ParosApp (Google Sheets / CSV exportado),
- los limpia, audita su calidad, calcula Pareto + MTBF/MTTR y produce un
- ajuste Weibull PROVISIONAL por componente con su intervalo óptimo de
- mantenimiento preventivo.
+ Lee lo que captura ParosApp (PAROSV2 + ACRS + cat_componentes), audita la
+ calidad del dato y produce tres niveles de análisis:
 
- Está pensado para RE-EJECUTARSE conforme crecen los datos (modelo vivo):
- cada corrida vuelve a leer la fuente, recalcula y reescribe los entregables.
+   1. PÉRDIDAS       Pareto de horas (no programado y programado por separado).
+   2. EQUIPO         MTBF / MTTR / disponibilidad y tendencia Crow-AMSAA
+                     (¿el equipo mejora o empeora?). Funciona con pocos datos.
+   3. COMPONENTE     Weibull con datos censurados, intervalo de confianza de β,
+                     intervalo óptimo de preventivo y ahorro esperado.
+   + Vida de plato / navajas (exploratorio).
 
- Uso:
-   python analisis_paros.py --csv paros.csv
-   python analisis_paros.py --sheets            # lee directo de Google Sheets
-   python analisis_paros.py --csv paros.csv --min-fallas 6
+ Uso (desde la carpeta analisis/):
+   python analisis_paros.py --xlsx "Base de Datos.xlsx"     # libro descargado
+   python analisis_paros.py --sheets                        # directo del Sheet
+   python analisis_paros.py --csv paros.csv [--componentes cat.csv]
+ Opciones:
+   --min-fallas 8      fallas mínimas para marcar un Weibull como CONFIABLE
+   --razon-costo 5     costo de una falla / costo de un preventivo
+   --ahorro-min 0.10   ahorro mínimo para recomendar preventivo por edad
 
- Salidas (carpeta ./salidas_analisis/):
-   - auditoria_calidad.csv      estado de llenado de campos clave
-   - pareto_motivos.csv         horas perdidas por motivo (regla 80/20)
-   - pareto_componentes.csv     horas perdidas por componente
-   - mtbf_mttr.csv              MTBF / MTTR por equipo-componente
-   - historial_fallas.csv       INSUMO de Weibull (tiempo entre fallas)
-   - weibull_resultados.csv     beta, eta, intervalo optimo, R(t)
-   - resumen.txt                lectura ejecutiva de la corrida
+ Salidas en ./salidas_analisis/:
+   reporte_confiabilidad.xlsx   todas las tablas, una pestaña cada una
+   resumen.txt                  lectura ejecutiva
+   *.csv                        las mismas tablas sueltas
+
+ Reglas de clasificación (por COMPONENTE, una por cierre de ACRS):
+   Reemplazo  + paro NO programado  -> FALLA       (cierra una vida, observada)
+   Reemplazo  + paro programado     -> PREVENTIVO  (cierra una vida, CENSURADA)
+   Reparación                       -> REPARACIÓN  (no reinicia la vida)
+   Ajuste / Revisión / Diagnóstico  -> sin efecto en la vida del componente
 ================================================================================
 """
 from __future__ import annotations
 
 import argparse
+import math
 import os
+import re
 import sys
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
 
 # ------------------------------------------------------------------------------
-# 1) CONFIGURACIÓN  (refleja config/settings.py de ParosApp)
+# 1) CONFIGURACIÓN
 # ------------------------------------------------------------------------------
-
-# Encabezado EXACTO en la hoja  ->  clave interna estable que usa este script.
-# Es el inverso de FIELD_TO_HEADER de la app. Empata por nombre normalizado,
-# así que tolera acentos / mayúsculas / columnas reordenadas.
 HEADER_TO_FIELD = {
-    "TIMESTAMP":                              "timestamp",
-    "ÁREA":                                   "area",
-    "TURNO":                                  "turno",
-    "LÍNEA":                                  "linea",
-    "EQUIPO / ÁREA AFECTADA":                 "equipo",
-    "MOTIVO DE PARO":                         "motivo",
-    "DESCRIPCIÓN DEL PARO":                   "descripcion",
-    "HORA DE INICIO (PARO PROGRAMADO)":       "ini_prog",
+    "TIMESTAMP": "timestamp", "ÁREA": "area", "TURNO": "turno", "LÍNEA": "linea",
+    "EQUIPO / ÁREA AFECTADA": "equipo", "MOTIVO DE PARO": "motivo",
+    "DESCRIPCIÓN DEL PARO": "descripcion",
+    "HORA DE INICIO (PARO PROGRAMADO)": "ini_prog",
     "HORA DE FINALIZACIÓN (PARO PROGRAMADO)": "fin_prog",
-    "DURACIÓN (PARO PROGRAMADO)":             "dur_prog",
-    "HORA DE INICIO (PARO NO PROGRAMADO)":    "ini_noprog",
+    "DURACIÓN (PARO PROGRAMADO)": "dur_prog",
+    "HORA DE INICIO (PARO NO PROGRAMADO)": "ini_noprog",
     "HORA DE FINALIZACIÓN (PARO NO PROGRAMADO)": "fin_noprog",
-    "DURACIÓN (PARO NO PROGRAMADO)":          "dur_noprog",
-    "ID_PARO":                                "id_paro",
-    "¿NECESITA ACR?":                         "necesita_acr",
-    "ORDEN DE TRABAJO":                       "orden_trabajo",
-    "CAUSA RAÍZ":                             "causa_raiz",
-    "COMPONENTE":                             "componente",
-    "ACCIÓN REALIZADA":                       "accion",
-    "REFACCIÓN":                              "refaccion",
-    "TIPO DE INTERVENCIÓN":                   "tipo_intervencion",
-    "PARO_PADRE":                             "paro_padre",
-    "ES_CONTINUACION":                        "es_continuacion",
-    "PARO_EN_CURSO":                          "paro_en_curso",
+    "DURACIÓN (PARO NO PROGRAMADO)": "dur_noprog",
+    "ID_PARO": "id_paro", "¿NECESITA ACR?": "necesita_acr",
+    "ORDEN DE TRABAJO": "orden_trabajo", "CAUSA RAÍZ": "causa_raiz",
+    "COMPONENTE": "componente", "ACCIÓN REALIZADA": "accion",
+    "REFACCIÓN": "refaccion", "TIPO DE INTERVENCIÓN": "tipo_intervencion",
+    "PARO_PADRE": "paro_padre", "ES_CONTINUACION": "es_continuacion",
+    "PARO_EN_CURSO": "paro_en_curso",
 }
-
-# Hoja ACRS (cierres de mantenimiento). Aquí viven componente, causa raíz y
-# tipo de intervención desde que se separó de PAROSV2.
 ACR_HEADER_TO_FIELD = {
     "ID_PARO": "id_paro", "EMPRESA": "empresa", "ORDEN_TRABAJO": "orden_trabajo",
     "CAUSA_RAIZ": "causa_raiz", "COMPONENTE": "componente",
     "TIPO_INTERVENCION": "tipo_intervencion", "ACCION": "accion",
     "REFACCION": "refaccion", "INI_INT": "ini_int", "FIN_INT": "fin_int",
     "DUR_INT": "dur_int", "FIRMA_PRODUCCION": "firma_produccion",
-}
-CAMPOS_ACR = ["empresa", "causa_raiz", "componente", "tipo_intervencion",
-              "accion", "refaccion", "dur_int", "orden_trabajo"]
-
-# Motivos que SÍ representan una falla de componente (lo que mide Weibull).
-# El resto (cambio de producto, falta de harina, tolvas llenas...) son paros
-# operativos/logísticos y NO entran al modelo de confiabilidad.
-MOTIVOS_FALLA = {          # SIN acentos: se comparan contra motivo_n (_norm)
-    "MTTTO CORRECTIVO",
-    "AJUSTE DE NAVAJAS",
-    "INSTRUMENTACION",
-    "INTERVENCION TECNICA",
+    "TIMESTAMP": "timestamp_acr",
 }
 
-EQUIPOS_CRITICOS = {"EXTRUSOR", "SECADOR", "COATER"}
+# Motivos que cuentan como FALLA DEL EQUIPO (sistema reparable).
+# Sin acentos: se comparan normalizados. «Espera de Refacción» NO es una falla
+# nueva (es la misma falla esperando pieza): suma tiempo, no eventos.
+MOTIVOS_FALLA_EQUIPO = {"MTTTO CORRECTIVO", "INSTRUMENTACION", "INTERVENCION TECNICA"}
+MOTIVOS_ESPERA = {"ESPERA DE REFACCION"}
+MOTIVOS_PLATO = re.compile(r"PLATO|NAVAJA|DADO")
 
-# Horas de producción programadas por día (3 turnos ~ continuo, menos comidas).
-# Se usa SOLO como respaldo si aún no se integran las horas reales del OEE.
-HORAS_OPER_POR_DIA = 22.0
+# Marcador que escribe la app cuando una intervención no lleva componente.
+SIN_COMPONENTE = {"", "—", "-", "(SIN COMPONENTE)"}
 
 CARPETA_SALIDA = "salidas_analisis"
+LINEA_AMBAS = "LINEA 1 Y 2"
 
 
 # ------------------------------------------------------------------------------
 # 2) UTILIDADES
 # ------------------------------------------------------------------------------
-
 def _norm(texto) -> str:
-    """Normaliza para comparar: sin acentos, mayúsculas, sin espacios extra."""
-    s = str(texto)
+    s = "" if texto is None else str(texto)
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode()
     return " ".join(s.split()).strip().upper()
 
 
 def hhmm_a_horas(valor) -> float:
-    """'1:30' -> 1.5 ; '1.5' -> 1.5 ; '' -> 0.0  (tolerante)."""
+    """'1:30' / '01:30:00' / '26:15' -> horas. Vacío o basura -> 0."""
     if valor is None or (isinstance(valor, float) and np.isnan(valor)):
         return 0.0
     s = str(valor).strip()
-    if s == "":
+    if not s:
         return 0.0
     if ":" in s:
         try:
-            h, m = s.split(":")[:2]
-            return round(int(h) + int(m) / 60, 4)
+            p = s.split(":")
+            return int(p[0]) + int(p[1]) / 60
         except ValueError:
             return 0.0
     try:
@@ -132,483 +118,819 @@ def hhmm_a_horas(valor) -> float:
         return 0.0
 
 
+def _hora(valor):
+    """'05:34' / '5:34:00' -> (5, 34) o None."""
+    s = str(valor or "").strip()
+    m = re.match(r"^(\d{1,2}):(\d{2})", s)
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return (h, mi) if h < 24 and mi < 60 else None
+
+
+def _texto(df, col):
+    return df[col].fillna("").astype(str).str.strip() if col in df.columns \
+        else pd.Series("", index=df.index)
+
+
+def _es_si(serie):
+    return serie.fillna("").astype(str).str.strip().str.upper().isin({"SÍ", "SI"})
+
+
 # ------------------------------------------------------------------------------
-# 3) CARGA DE DATOS
+# 3) CARGA
 # ------------------------------------------------------------------------------
-
-def cargar_desde_csv(ruta: str) -> pd.DataFrame:
-    """CSV de la vista Exportar (ya trae las columnas de ACRS unidas)."""
-    df = pd.read_csv(ruta, dtype=str).fillna("")
-    return _consolidar_tramos(_renombrar(df, HEADER_TO_FIELD))
-
-
-def cargar_desde_sheets() -> pd.DataFrame:
-    """Lee PAROSV2 + ACRS directo del Google Sheet."""
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    # Ajusta esta ruta a tu service_account.json (NUNCA subir al repo).
-    creds = Credentials.from_service_account_file("service_account.json", scopes=scopes)
-    sh = gspread.authorize(creds).open_by_key(os.environ["SPREADSHEET_KEY"])
-
-    def _hoja(nombre):
-        vals = sh.worksheet(nombre).get_all_values()
-        if not vals:
-            return pd.DataFrame()
-        return pd.DataFrame(vals[1:], columns=[str(h).strip() for h in vals[0]])
-
-    paros = _renombrar(_hoja(os.environ.get("HOJA_PAROS", "PAROSV2")), HEADER_TO_FIELD)
-    try:
-        acrs = _renombrar(_hoja(os.environ.get("HOJA_ACRS", "ACRS")), ACR_HEADER_TO_FIELD)
-    except Exception:
-        acrs = pd.DataFrame()
-    return _consolidar_tramos(unir_acrs(paros, acrs))
-
-
 def _renombrar(df: pd.DataFrame, mapa: dict) -> pd.DataFrame:
-    df = df.loc[:, [str(c).strip() != "" for c in df.columns]].copy()
+    df = df.loc[:, [str(c).strip() != "" and not str(c).startswith("Unnamed")
+                    for c in df.columns]].copy()
     inverso = {_norm(k): v for k, v in mapa.items()}
     return df.rename(columns={c: inverso.get(_norm(c), c) for c in df.columns})
 
 
-def unir_acrs(paros: pd.DataFrame, acrs: pd.DataFrame) -> pd.DataFrame:
+def _limpiar(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.fillna("").astype(str)
+    return df[df.apply(lambda r: any(v.strip() for v in r), axis=1)]
+
+
+def _catalogo(df: pd.DataFrame) -> dict:
+    """cat_componentes -> {COMPONENTE_normalizado: [equipos]}."""
+    if df is None or df.empty:
+        return {}
+    cols = {_norm(c): c for c in df.columns}
+    if "COMPONENTE" not in cols or "EQUIPO" not in cols:
+        return {}
+    out = {}
+    for _, r in df.iterrows():
+        comp = _norm(r[cols["COMPONENTE"]])
+        if comp:
+            eq = str(r[cols["EQUIPO"]]).strip()
+            if eq and eq not in out.setdefault(comp, []):
+                out[comp].append(eq)
+    return out
+
+
+def equipo_de_componente(catalogo: dict, comp: str, equipo_paro: str) -> str:
+    """Equipo del catálogo; si el componente existe en varios, manda el del paro."""
+    eqs = catalogo.get(_norm(comp), [])
+    for e in eqs:
+        if _norm(e) == _norm(equipo_paro):
+            return e
+    return eqs[0] if eqs else ""
+
+
+def cargar_desde_xlsx(ruta: str):
+    hojas = pd.read_excel(ruta, sheet_name=None, dtype=str)
+    paros = _renombrar(_limpiar(hojas["PAROSV2"]), HEADER_TO_FIELD)
+    acrs = _renombrar(_limpiar(hojas["ACRS"]), ACR_HEADER_TO_FIELD) \
+        if "ACRS" in hojas else pd.DataFrame()
+    cat = _catalogo(_limpiar(hojas["cat_componentes"])) \
+        if "cat_componentes" in hojas else {}
+    return paros, acrs, cat
+
+
+def cargar_desde_sheets():
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    creds = Credentials.from_service_account_file(
+        "service_account.json",  # NUNCA subir este archivo al repo
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    sh = gspread.authorize(creds).open_by_key(os.environ["SPREADSHEET_KEY"])
+
+    def _hoja(nombre):
+        try:
+            vals = sh.worksheet(nombre).get_all_values()
+        except Exception:
+            return pd.DataFrame()
+        if not vals:
+            return pd.DataFrame()
+        return _limpiar(pd.DataFrame(vals[1:], columns=[str(h).strip() for h in vals[0]]))
+
+    paros = _renombrar(_hoja(os.environ.get("HOJA_PAROS", "PAROSV2")), HEADER_TO_FIELD)
+    acrs = _renombrar(_hoja(os.environ.get("HOJA_ACRS", "ACRS")), ACR_HEADER_TO_FIELD)
+    return paros, acrs, _catalogo(_hoja("cat_componentes"))
+
+
+def cargar_desde_csv(ruta: str, ruta_cat: str | None = None):
     """
-    Une los cierres de ACRS a cada paro. Un paro AMBOS puede tener 2 cierres
-    (RSI y STEO): se agregan en UNA fila (valores unidos con ' | ') para no
-    duplicar las horas del paro. El valor de ACRS tiene prioridad sobre las
-    columnas legacy (vacías) de PAROSV2.
+    CSV de la vista Exportar: trae el paro repetido una vez por cada cierre
+    de ACRS. Se separa de nuevo en (paros, acrs).
     """
-    if acrs.empty or "id_paro" not in acrs.columns:
-        return paros
-    acrs = acrs.copy()
-    acrs["id_paro"] = acrs["id_paro"].astype(str).str.strip()
-    cols = [c for c in CAMPOS_ACR if c in acrs.columns]
-    agg = (acrs.groupby("id_paro")[cols]
-               .agg(lambda x: " | ".join(v for v in x.astype(str).str.strip() if v))
-               .reset_index())
+    df = _renombrar(_limpiar(pd.read_csv(ruta, dtype=str)), HEADER_TO_FIELD)
+    cols_paro = [c for c in df.columns if c in HEADER_TO_FIELD.values()]
+    paros = df[cols_paro].drop_duplicates("id_paro")
+    acrs = pd.DataFrame()
+    if "empresa" in df.columns:
+        acrs = df[_texto(df, "empresa") != ""][
+            [c for c in ACR_HEADER_TO_FIELD.values() if c in df.columns]]
+    cat = _catalogo(_limpiar(pd.read_csv(ruta_cat, dtype=str))) if ruta_cat else {}
+    return paros, acrs, cat
+
+
+# ------------------------------------------------------------------------------
+# 4) EVENTOS: tramos consolidados + inicio/fin reales
+# ------------------------------------------------------------------------------
+def construir_eventos(paros: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """
+    Un renglón por EVENTO. Los tramos hijo suman su duración al padre. Un hijo
+    cuyo padre no existe se conserva como evento propio (antes se perdía).
+
+    inicio = fecha del TIMESTAMP + HORA DE INICIO. Si la hora de inicio es
+    mayor que la hora de captura, el paro empezó el día anterior.
+    fin    = inicio + duración total del evento.
+    """
     df = paros.copy()
-    df["id_paro"] = df["id_paro"].astype(str).str.strip()
-    df = df.merge(agg, on="id_paro", how="left", suffixes=("", "_acr"))
-    for c in cols:
-        if f"{c}_acr" in df.columns:
-            a = df[f"{c}_acr"].fillna("")
-            df[c] = a.where(a != "", df[c].fillna("") if c in df.columns else "")
-            df = df.drop(columns=[f"{c}_acr"])
-    return df
+    for c in ("dur_prog", "dur_noprog", "ini_prog", "ini_noprog", "id_paro",
+              "paro_padre", "es_continuacion", "timestamp", "motivo", "linea",
+              "equipo", "area", "descripcion", "necesita_acr"):
+        if c not in df.columns:
+            df[c] = ""
+    df["id_paro"] = _texto(df, "id_paro")
+    df["h_prog"] = df["dur_prog"].apply(hhmm_a_horas)
+    df["h_noprog"] = df["dur_noprog"].apply(hhmm_a_horas)
+
+    es_hijo = _es_si(df["es_continuacion"])
+    ids = set(df.loc[~es_hijo, "id_paro"])
+    padre = _texto(df, "paro_padre")
+    huerfano = es_hijo & ~padre.isin(ids)
+    hijos = df[es_hijo & ~huerfano]
+    ev = df[~es_hijo | huerfano].copy()
+
+    extra = (hijos["h_prog"] + hijos["h_noprog"]).groupby(padre[hijos.index]).sum()
+    ev["h_tramos"] = ev["id_paro"].map(extra).fillna(0.0)
+    ev["n_tramos"] = 1 + ev["id_paro"].map(padre[hijos.index].value_counts()).fillna(0).astype(int)
+    usa_prog = ev["h_prog"] > 0
+    ev.loc[usa_prog, "h_prog"] += ev.loc[usa_prog, "h_tramos"]
+    ev.loc[~usa_prog, "h_noprog"] += ev.loc[~usa_prog, "h_tramos"]
+    ev["horas"] = ev["h_prog"] + ev["h_noprog"]
+
+    ev["motivo_n"] = ev["motivo"].apply(_norm)
+    ev["linea_n"] = ev["linea"].apply(_norm)
+    ev["equipo_n"] = ev["equipo"].apply(_norm)
+    # Programado: por columna Y por motivo (hay preventivos capturados en la
+    # columna de no programado).
+    ev["programado"] = (ev["h_prog"] > 0) | ev["motivo_n"].str.contains(
+        "PREVENTIVO|PROGRAMADO", regex=True)
+    ev["tipo"] = np.where(ev["programado"], "PROGRAMADO", "NO PROGRAMADO")
+
+    ts = pd.to_datetime(ev["timestamp"], errors="coerce")
+    inicios = []
+    for t, a, b in zip(ts, ev["ini_noprog"], ev["ini_prog"]):
+        hm = _hora(a) or _hora(b)
+        if pd.isna(t):
+            inicios.append(pd.NaT)
+            continue
+        if hm is None:
+            inicios.append(t)
+            continue
+        ini = t.normalize() + timedelta(hours=hm[0], minutes=hm[1])
+        if ini > t + timedelta(minutes=30):
+            ini -= timedelta(days=1)
+        inicios.append(ini)
+    ev["inicio"] = pd.to_datetime(inicios)
+    ev["fin"] = ev["inicio"] + pd.to_timedelta(ev["horas"], unit="h")
+    ev["fecha"] = ev["inicio"]
+
+    info = {"filas": len(df), "eventos": len(ev), "hijos": int(es_hijo.sum()),
+            "huerfanos": int(huerfano.sum()),
+            "sin_fecha": int(ev["inicio"].isna().sum())}
+    return ev.reset_index(drop=True), info
 
 
-def _a_min(val) -> int:
-    s = str(val).strip()
-    if ":" not in s:
-        return 0
-    try:
-        h, m = s.split(":")[:2]
-        return int(h) * 60 + int(m)
-    except ValueError:
-        return 0
-
-
-def _consolidar_tramos(df: pd.DataFrame) -> pd.DataFrame:
+# ------------------------------------------------------------------------------
+# 5) RELOJ DE OPERACIÓN POR LÍNEA (unión de intervalos de paro)
+# ------------------------------------------------------------------------------
+class RelojOperacion:
     """
-    Paros multi-turno: suma la duración de los tramos HIJOS al PADRE (en la
-    misma columna que usa el padre: programado o no programado) y elimina los
-    hijos, para que Pareto / MTBF / Weibull trabajen sobre EVENTOS únicos.
+    Horas en que la línea estuvo corriendo = calendario − UNIÓN de paros.
+    La unión evita restar dos veces cuando dos paros se traslapan (p. ej.
+    molienda y extrusión parados a la vez). Un paro «Línea 1 y 2» detiene
+    ambas líneas.
     """
-    if "es_continuacion" not in df.columns or "paro_padre" not in df.columns:
-        return df
-    df = df.copy()
-    es_hijo = df["es_continuacion"].fillna("").astype(str).str.strip().str.upper().isin({"SÍ", "SI"})
-    hijos = df[es_hijo]
-    df = df[~es_hijo].copy()
-    if hijos.empty:
-        return df
 
-    min_hijo = (hijos.get("dur_prog", "").apply(_a_min)
-                + hijos.get("dur_noprog", "").apply(_a_min))
-    suma = min_hijo.groupby(hijos["paro_padre"].astype(str).str.strip()).sum()
+    def __init__(self, eventos: pd.DataFrame):
+        ev = eventos.dropna(subset=["inicio"])
+        ev = ev[ev["horas"] > 0]
+        self.t0 = eventos["inicio"].min()
+        self.tf = eventos["fin"].max()
+        self.int = {}
+        lineas = {l for l in ev["linea_n"].unique() if l and l != LINEA_AMBAS}
+        for ln in lineas:
+            sel = ev[ev["linea_n"].isin([ln, LINEA_AMBAS])]
+            self.int[ln] = self._unir(list(zip(sel["inicio"], sel["fin"])))
 
-    for col in ("dur_prog", "dur_noprog"):
-        if col not in df.columns:
-            df[col] = ""
-    extra = df["id_paro"].astype(str).str.strip().map(suma).fillna(0).astype(int)
-    usa_prog = df["dur_prog"].astype(str).str.strip() != ""
-    for col, mask in (("dur_prog", usa_prog), ("dur_noprog", ~usa_prog)):
-        sel = mask & (extra > 0)
-        tot = df.loc[sel, col].apply(_a_min) + extra[sel]
-        df.loc[sel, col] = [f"{t // 60}:{t % 60:02d}" for t in tot]
-    return df
+    @staticmethod
+    def _unir(tramos):
+        tramos = sorted(tramos)
+        out = []
+        for a, b in tramos:
+            if out and a <= out[-1][1]:
+                out[-1][1] = max(out[-1][1], b)
+            else:
+                out.append([a, b])
+        return out
 
+    def _linea(self, ln):
+        ln = _norm(ln)
+        if ln == LINEA_AMBAS or ln not in self.int:
+            # «Línea 1 y 2» o línea desconocida: se usa la primera disponible.
+            return next(iter(sorted(self.int)), None)
+        return ln
 
-# ------------------------------------------------------------------------------
-# 4) NORMALIZACIÓN
-# ------------------------------------------------------------------------------
+    def paro_entre(self, ln, a, b) -> float:
+        ln = self._linea(ln)
+        if ln is None or pd.isna(a) or pd.isna(b) or b <= a:
+            return 0.0
+        tot = 0.0
+        for x, y in self.int[ln]:
+            if y <= a:
+                continue
+            if x >= b:
+                break
+            tot += (min(y, b) - max(x, a)).total_seconds()
+        return tot / 3600.0
 
-def normalizar(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    def operacion_entre(self, ln, a, b) -> float:
+        if pd.isna(a) or pd.isna(b) or b <= a:
+            return 0.0
+        cal = (b - a).total_seconds() / 3600.0
+        return max(cal - self.paro_entre(ln, a, b), 0.0)
 
-    # Fecha/hora del evento
-    df["fecha"] = pd.to_datetime(df.get("timestamp", ""), errors="coerce")
+    def reloj(self, ln, t) -> float:
+        """Horas de operación acumuladas desde el inicio de los datos hasta t."""
+        return self.operacion_entre(ln, self.t0, t)
 
-    # Duración total en horas (suma de columna prog + no prog)
-    df["h_prog"]   = df.get("dur_prog", "").apply(hhmm_a_horas)
-    df["h_noprog"] = df.get("dur_noprog", "").apply(hhmm_a_horas)
-    df["horas"]    = df["h_prog"] + df["h_noprog"]
-    df["tipo"] = np.where(df["h_prog"] > 0, "PROGRAMADO", "NO PROGRAMADO")
-
-    # Texto normalizado para agrupar sin que los acentos fragmenten datos
-    for col in ["equipo", "motivo", "componente", "linea", "area",
-                "causa_raiz", "tipo_intervencion"]:
-        if col in df.columns:
-            df[col + "_n"] = df[col].apply(_norm)
-        else:
-            df[col] = ""
-            df[col + "_n"] = ""
-
-    # --- Clasificación de intervenciones (insumo de Weibull) -----------------
-    # REEMPLAZO   -> punto de RENOVACIÓN: cierra una vida, abre otra. Es el
-    #                evento que el modelo Weibull cuenta como "falla de vida".
-    # REPARACIÓN  -> falla real pero NO reinicia el reloj de vida.
-    #                Va a un análisis aparte (sistema reparable / NHPP).
-    # AJUSTE      -> intervención menor; no entra al conteo de fallas.
-    # Un cierre puede traer varios tipos ("Reemplazo | Ajuste"): manda el de
-    # mayor jerarquía (Reemplazo > Reparación > Ajuste).
-    ti = df["tipo_intervencion_n"]
-    df["es_reemplazo"]  = ti.str.contains("REEMPLAZO", regex=False)
-    df["es_reparacion"] = ~df["es_reemplazo"] & ti.str.contains("REPARACION", regex=False)
-    df["es_ajuste"]     = (~df["es_reemplazo"] & ~df["es_reparacion"]
-                           & ti.str.contains("AJUSTE", regex=False))
-    tiene_clasif = df["es_reemplazo"] | df["es_reparacion"] | df["es_ajuste"]
-
-    # Compatibilidad hacia atrás: registros previos al campo no tienen
-    # tipo_intervencion. Para ellos caemos al heurístico anterior y los
-    # marcamos como "probables renovaciones" (asunción conservadora: en
-    # piso, un MTTTO Correctivo casi siempre termina en reemplazo).
-    heuristico_falla = df["motivo_n"].isin(MOTIVOS_FALLA) | (
-        (df["tipo"] == "NO PROGRAMADO") & (df["componente_n"] != "")
-    )
-    df["clasif_origen"] = np.where(tiene_clasif, "explícita", "heurística")
-
-    # es_falla  = cualquier falla real (reemplazo + reparación, o heurístico)
-    # es_renov  = SOLO eventos que reinician el reloj de vida (Weibull renewal)
-    df["es_falla"] = df["es_reemplazo"] | df["es_reparacion"] | (
-        ~tiene_clasif & heuristico_falla
-    )
-    df["es_renovacion"] = df["es_reemplazo"] | (
-        ~tiene_clasif & heuristico_falla
-    )
-    return df
+    def fraccion_operando(self, ln) -> float:
+        cal = (self.tf - self.t0).total_seconds() / 3600.0
+        return self.operacion_entre(ln, self.t0, self.tf) / cal if cal > 0 else 0.0
 
 
 # ------------------------------------------------------------------------------
-# 5) AUDITORÍA DE CALIDAD DE DATOS
+# 6) CIERRES DE MANTENIMIENTO: una fila por componente intervenido
 # ------------------------------------------------------------------------------
-
-def auditoria_calidad(df: pd.DataFrame) -> pd.DataFrame:
-    n = len(df)
-    fallas = df[df["es_falla"]]
-    nf = max(len(fallas), 1)
-
-    n_explicita = int((df["clasif_origen"] == "explícita").sum())
-
-    filas = [
-        ("Registros totales", n, "—"),
-        ("Fechas válidas (timestamp)", int(df["fecha"].notna().sum()),
-         f"{df['fecha'].notna().mean()*100:.0f}%"),
-        ("Fallas de componente detectadas", len(fallas),
-         f"{len(fallas)/max(n,1)*100:.0f}% del total"),
-        ("  · con tipo_intervencion explícito", n_explicita,
-         f"{n_explicita/max(n,1)*100:.0f}% (datos nuevos)"),
-        ("  · Reemplazos (renovaciones para Weibull)",
-         int(df["es_reemplazo"].sum()), "—"),
-        ("  · Reparaciones (sistema reparable, análisis aparte)",
-         int(df["es_reparacion"].sum()), "—"),
-        ("  · Ajustes (excluidos del modelo)",
-         int(df["es_ajuste"].sum()), "—"),
-        ("Fallas con COMPONENTE llenado",
-         int((fallas["componente_n"] != "").sum()),
-         f"{(fallas['componente_n'] != '').mean()*100:.0f}% de fallas"),
-        ("Fallas con CAUSA RAÍZ llenada",
-         int((fallas["causa_raiz_n"] != "").sum()),
-         f"{(fallas['causa_raiz_n'] != '').mean()*100:.0f}% de fallas"),
-        ("Componentes distintos (nombres)",
-         fallas["componente_n"].replace("", np.nan).dropna().nunique(), "—"),
-    ]
-    return pd.DataFrame(filas, columns=["Métrica", "Valor", "Cobertura"])
+_JERARQUIA = ["REEMPLAZO", "REPARACION", "AJUSTE", "REVISION"]
 
 
-# ------------------------------------------------------------------------------
-# 6) PARETO + MTBF / MTTR
-# ------------------------------------------------------------------------------
-
-def pareto(df: pd.DataFrame, columna: str) -> pd.DataFrame:
-    g = (df.groupby(columna)["horas"].sum()
-           .sort_values(ascending=False).reset_index())
-    g = g[g["horas"] > 0]
-    total = g["horas"].sum()
-    g["%"] = (g["horas"] / total * 100).round(1) if total else 0
-    g["% acumulado"] = g["%"].cumsum().round(1)
-    return g.rename(columns={columna: columna.replace("_n", "")})
+def _clase_tipo(tipo_n: str) -> str:
+    for k in _JERARQUIA:
+        if k in tipo_n:
+            return k
+    return "OTRO" if tipo_n else ""
 
 
-def mtbf_mttr(historial: pd.DataFrame) -> pd.DataFrame:
-    """MTBF (horas operativas entre fallas) y MTTR (horas de reparación)."""
-    if historial.empty:
-        return pd.DataFrame()
-    g = historial.groupby(["equipo", "componente"]).agg(
-        fallas=("tbf_oper_h", "count"),
-        mtbf_oper_h=("tbf_oper_h", "mean"),
-        mtbf_cal_h=("tbf_cal_h", "mean"),
-        mttr_h=("dur_reparacion_h", "mean"),
-    ).reset_index()
-    return g.sort_values("fallas", ascending=False).round(1)
-
-
-# ------------------------------------------------------------------------------
-# 7) HISTORIAL DE FALLAS  (el insumo crítico de Weibull)
-# ------------------------------------------------------------------------------
-
-def construir_historial(df: pd.DataFrame) -> pd.DataFrame:
+def emparejar(comp_str: str, tipo_str: str) -> tuple[list, bool]:
     """
-    Para cada (línea, equipo, componente) ordena las fallas en el tiempo y
-    calcula el Tiempo Entre Fallas (TBF):
-
-      - tbf_cal_h : horas de CALENDARIO entre falla previa y actual.
-      - tbf_oper_h: horas OPERATIVAS netas = calendario − paros de esa línea
-                    ocurridos en el intervalo. Es el mejor proxy de 'horas de
-                    operación del componente' MIENTRAS no se integre el OEE.
-
-    NOTA: este TBF operativo es PROVISIONAL. El dato definitivo son las horas
-    de operación acumuladas que entregará el sistema OEE del Ing. Barba.
-
-    Solo se cuentan los REEMPLAZOS (eventos de renovación). Las reparaciones
-    salen por separado en eventos_reparacion.csv.
+    Empareja 'A | B' con 'Reemplazo | Ajuste'. Versiones anteriores de la app
+    omitían el componente vacío de una Revisión, así que las listas pueden no
+    medir lo mismo: se quitan Revisiones sin componente hasta que cuadren.
+    Devuelve ([(componente, tipo), ...], desalineado).
     """
-    fallas = df[df["es_renovacion"] & df["fecha"].notna()].copy()
-    if fallas.empty:
-        return pd.DataFrame()
-    # Un cierre puede intervenir varios componentes ("A | B"): cada uno es una
-    # renovación de SU propia vida -> una fila por componente.
-    fallas["componente"] = fallas["componente"].astype(str).str.split(r"\s*\|\s*")
-    fallas = fallas.explode("componente")
-    fallas["componente"] = fallas["componente"].fillna("").str.strip()
-    fallas["componente_n"] = fallas["componente"].apply(_norm)
+    comps = [c.strip() for c in str(comp_str).split("|")] if str(comp_str).strip() else []
+    comps = ["" if _norm(c) in SIN_COMPONENTE else c for c in comps]
+    tipos = [t.strip() for t in str(tipo_str).split("|")] if str(tipo_str).strip() else []
+    if not tipos:
+        return [(c, "") for c in comps] or [("", "")], False
+    if len(comps) == len(tipos):
+        return list(zip(comps, tipos)), False
+    if len(tipos) == 1:
+        return [(c, tipos[0]) for c in comps] or [("", tipos[0])], False
+    sin_comp, t = [], list(tipos)
+    while len(t) > len(comps):
+        idx = next((i for i in range(len(t) - 1, -1, -1)
+                    if _clase_tipo(_norm(t[i])) == "REVISION"), None)
+        if idx is None:
+            break
+        sin_comp.append(("", t.pop(idx)))
+    if len(t) == len(comps):
+        return list(zip(comps, t)) + sin_comp, False
+    dom = min(tipos, key=lambda x: _JERARQUIA.index(_clase_tipo(_norm(x)))
+              if _clase_tipo(_norm(x)) in _JERARQUIA else 9)
+    return [(c, dom) for c in comps] or [("", dom)], True
 
-    # Paros por línea (para descontar downtime del intervalo)
-    todos = df[df["fecha"].notna()].copy()
 
-    registros = []
-    claves = ["linea_n", "equipo_n", "componente_n"]
-    for (lin, eq, comp), grupo in fallas.groupby(claves):
-        if comp == "":
-            continue  # sin componente no se puede modelar por componente
-        grupo = grupo.sort_values("fecha")
-        prev = None
-        for _, fila in grupo.iterrows():
-            if prev is not None:
-                horas_cal = (fila["fecha"] - prev).total_seconds() / 3600.0
-                # downtime de ESA línea dentro del intervalo (excluye la falla actual)
-                en_intervalo = todos[
-                    (todos["linea_n"] == lin)
-                    & (todos["fecha"] > prev)
-                    & (todos["fecha"] < fila["fecha"])
-                ]
-                downtime = en_intervalo["horas"].sum()
-                horas_oper = max(horas_cal - downtime, 0.0)
-                registros.append({
-                    "linea": fila["linea"],
-                    "equipo": fila["equipo"],
-                    "componente": fila["componente"],
-                    "fecha_falla": fila["fecha"],
-                    "tbf_cal_h": round(horas_cal, 1),
-                    "tbf_oper_h": round(horas_oper, 1),
-                    "dur_reparacion_h": round(fila["horas"], 2),
-                    "motivo": fila["motivo"],
+def construir_cierres(eventos: pd.DataFrame, acrs: pd.DataFrame,
+                      paros: pd.DataFrame, catalogo: dict) -> pd.DataFrame:
+    filas = []
+    fuentes = []
+    if acrs is not None and not acrs.empty and "id_paro" in acrs.columns:
+        a = acrs.copy()
+        for c in ("empresa", "componente", "tipo_intervencion", "causa_raiz", "dur_int"):
+            a[c] = _texto(a, c)
+        a["id_paro"] = _texto(a, "id_paro")
+        fuentes.append(a)
+    # Columnas legacy de PAROSV2 (paros sin ningún cierre en ACRS)
+    if "componente" in paros.columns:
+        con_acr = set(fuentes[0]["id_paro"]) if fuentes else set()
+        leg = paros[(_texto(paros, "componente") != "")
+                    & ~_texto(paros, "id_paro").isin(con_acr)].copy()
+        if not leg.empty:
+            for c in ("tipo_intervencion", "causa_raiz"):
+                leg[c] = _texto(leg, c)
+            leg["empresa"], leg["dur_int"] = "LEGACY", ""
+            fuentes.append(leg)
+
+    ev = eventos.set_index("id_paro")
+    for fuente in fuentes:
+        for _, r in fuente.iterrows():
+            pid = str(r["id_paro"]).strip()
+            if pid not in ev.index:
+                continue
+            e = ev.loc[pid]
+            if isinstance(e, pd.DataFrame):
+                e = e.iloc[0]
+            pares, desal = emparejar(r["componente"], r["tipo_intervencion"])
+            for comp, tipo in pares:
+                clase = _clase_tipo(_norm(tipo))
+                if clase == "REEMPLAZO":
+                    evento = "PREVENTIVO" if e["programado"] else "FALLA"
+                elif clase == "REPARACION":
+                    evento = "REPARACIÓN"
+                elif clase == "":
+                    # Sin tipo (dato viejo): correctivo con componente = falla.
+                    evento = ("FALLA (supuesta)" if comp and not e["programado"]
+                              and e["motivo_n"] in MOTIVOS_FALLA_EQUIPO else "SIN TIPO")
+                else:
+                    evento = "SIN EFECTO EN VIDA"
+                eq_cat = equipo_de_componente(catalogo, comp, e["equipo"]) if comp else ""
+                filas.append({
+                    "id_paro": pid, "empresa": r["empresa"],
+                    "inicio": e["inicio"], "fin": e["fin"],
+                    "linea": e["linea"], "linea_n": e["linea_n"],
+                    "equipo_paro": e["equipo"],
+                    "equipo": eq_cat or e["equipo"],
+                    "equipo_de_catalogo": bool(eq_cat),
+                    "componente": comp, "componente_n": _norm(comp),
+                    "tipo_intervencion": tipo, "evento": evento,
+                    "motivo": e["motivo"], "programado": bool(e["programado"]),
+                    "horas_paro": e["horas"], "horas_interv": hhmm_a_horas(r["dur_int"]),
+                    "causa_raiz": r.get("causa_raiz", ""),
+                    "desalineado": desal,
                 })
-            prev = fila["fecha"]
-    return pd.DataFrame(registros)
+    return pd.DataFrame(filas)
 
 
 # ------------------------------------------------------------------------------
-# 8) AJUSTE WEIBULL  +  INTERVALO ÓPTIMO  (provisional)
+# 7) WEIBULL CON CENSURA
 # ------------------------------------------------------------------------------
-
-def _ajustar_weibull(tiempos: np.ndarray):
-    """Devuelve (beta, eta). Usa 'reliability' si está; si no, scipy."""
-    tiempos = tiempos[tiempos > 0]
-    try:
-        from reliability.Fitters import Fit_Weibull_2P
-        f = Fit_Weibull_2P(failures=list(tiempos), show_probability_plot=False,
-                           print_results=False)
-        return float(f.beta), float(f.alpha)   # alpha = eta
-    except Exception:
-        from scipy.stats import weibull_min
-        beta, loc, eta = weibull_min.fit(tiempos, floc=0)
-        return float(beta), float(eta)
-
-
-def intervalo_optimo(beta: float, eta: float, razon_costo: float = 5.0) -> float:
+def ajustar_weibull(fallas, censuras=()):
     """
-    Intervalo de preventivo que minimiza el costo por unidad de tiempo
-    (modelo de reemplazo por edad). razon_costo = costo_correctivo/costo_preventivo.
-    Solo tiene sentido reemplazar por edad cuando hay desgaste (beta > 1).
+    Weibull 2P por máxima verosimilitud con censura por la derecha.
+
+    Con pocas fallas el β de máxima verosimilitud sale inflado (con 4 fallas
+    puramente aleatorias, β=1, suele salir ≈1.3–1.5 y "parece" desgaste).
+    Por eso:
+      · β se corrige por sesgo:  β_U = β · (r − 2) / (r − 0.68), r = n.º fallas
+      · el IC 90 % de β es por razón de verosimilitud (perfil), escalado por la
+        misma corrección. Validado por simulación: con β real = 1 declara
+        "desgaste" (límite inferior > 1) solo ≈5 % de las veces, con 3 a 15 fallas.
+    Devuelve dict(beta, eta, beta_lo, beta_hi, beta_mle).
+    """
+    from scipy.optimize import brentq, minimize_scalar
+    from scipy.stats import chi2
+
+    f = np.asarray([x for x in fallas if x > 0], float)
+    c = np.asarray([x for x in censuras if x > 0], float)
+    r = len(f)
+    if r < 2:
+        return None
+    escala = float(np.mean(np.concatenate([f, c])))   # evita desbordes numéricos
+    fs, cs = f / escala, c / escala
+    sum_log_f = float(np.sum(np.log(fs)))
+
+    from scipy.special import logsumexp
+    log_t = np.log(np.concatenate([fs, cs]))
+
+    def perfil(lb):
+        """−log-verosimilitud con η ya optimizado para este β (en escala log)."""
+        b = math.exp(lb)
+        log_s = float(logsumexp(b * log_t))           # log Σ t^β, sin desbordes
+        nll = -(r * math.log(b) - r * (log_s - math.log(r)) + (b - 1) * sum_log_f - r)
+        return nll, (log_s - math.log(r)) / b          # (nll, log η)
+
+    res = minimize_scalar(lambda lb: perfil(lb)[0], bounds=(-4, 4), method="bounded")
+    lb0, nll0 = float(res.x), float(res.fun)
+    b_mle, eta = math.exp(lb0), math.exp(perfil(lb0)[1]) * escala
+    k = (r - 2) / (r - 0.68) if r > 2 else 1.0
+
+    crit = chi2.ppf(0.90, 1) / 2
+    g = lambda lb: perfil(lb)[0] - nll0 - crit
+    lo = math.exp(brentq(g, -8, lb0)) if g(-8) > 0 else 0.0
+    hi = math.exp(brentq(g, lb0, 8)) if g(8) > 0 else float("inf")
+    return {"beta": b_mle * k, "eta": eta, "beta_lo": lo * k, "beta_hi": hi * k,
+            "beta_mle": b_mle}
+
+
+def _costo_por_hora(T, beta, eta, razon):
+    from scipy.integrate import quad
+    R = math.exp(-((T / eta) ** beta))
+    vida = quad(lambda t: math.exp(-((t / eta) ** beta)), 0, T)[0]
+    return (1.0 * R + razon * (1 - R)) / max(vida, 1e-9)
+
+
+def intervalo_optimo(beta: float, eta: float, razon_costo: float = 5.0):
+    """
+    Reemplazo por edad: T que minimiza costo por hora. Devuelve (T, ahorro),
+    ahorro = 1 − costo(T) / costo de correr hasta la falla. Con β ≤ 1 no hay
+    intervalo que convenga (devuelve inf, 0).
     """
     if beta <= 1:
-        return float("inf")  # falla aleatoria/infantil: preventivo por edad no ayuda
+        return float("inf"), 0.0
     from scipy.optimize import minimize_scalar
-    from scipy.stats import weibull_min
-
-    def costo(T):
-        if T <= 0:
-            return 1e9
-        R = weibull_min.sf(T, beta, scale=eta)              # confiabilidad a T
-        # vida esperada hasta intervención (integral de R de 0 a T)
-        ts = np.linspace(0, T, 200)
-        _trapz = getattr(np, "trapezoid", getattr(np, "trapz", None))
-        vida_esp = _trapz(weibull_min.sf(ts, beta, scale=eta), ts)
-        c_prev, c_corr = 1.0, razon_costo
-        return (c_prev * R + c_corr * (1 - R)) / max(vida_esp, 1e-9)
-
-    res = minimize_scalar(costo, bounds=(eta * 0.05, eta * 2.0), method="bounded")
-    return float(res.x)
+    res = minimize_scalar(lambda T: _costo_por_hora(T, beta, eta, razon_costo),
+                          bounds=(eta * 0.02, eta * 3.0), method="bounded")
+    mttf = eta * math.gamma(1 + 1 / beta)
+    c_rtf = razon_costo / mttf
+    return float(res.x), max(0.0, 1 - res.fun / c_rtf)
 
 
-def confiabilidad(t: float, beta: float, eta: float) -> float:
-    return float(np.exp(-((t / eta) ** beta)))
+def diagnostico_beta(beta, lo, hi) -> str:
+    if lo > 1:
+        return "Desgaste (β > 1 con 90 % de confianza)"
+    if hi < 1:
+        return "Mortalidad infantil (β < 1): revisar montaje, calidad de refacción"
+    return "Sin evidencia de desgaste (el IC de β incluye 1)"
 
 
-def diagnostico_beta(beta: float) -> str:
-    if beta < 0.95:
-        return "Mortalidad infantil (defecto fab./instalación) — preventivo por edad NO aplica"
-    if beta <= 1.05:
-        return "Falla aleatoria — revisar predictivo/condición, no preventivo por edad"
-    if beta <= 2:
-        return "Desgaste incipiente — preventivo por edad recomendable"
-    return "Desgaste marcado — preventivo por edad muy recomendable"
+def historial_vidas(cierres: pd.DataFrame, reloj: RelojOperacion) -> pd.DataFrame:
+    """
+    Por (línea, equipo, componente): cada renovación (FALLA o PREVENTIVO)
+    cierra una vida. La vida va del FIN de la renovación anterior al INICIO
+    de la actual, en horas de OPERACIÓN de la línea.
+      - termina en FALLA       -> vida observada
+      - termina en PREVENTIVO  -> vida censurada (no llegó a fallar)
+      - la vida en curso       -> censurada a la fecha de corte
+    La vida anterior a la primera renovación se desconoce y no se usa.
+    """
+    if cierres.empty:
+        return pd.DataFrame()
+    ren = cierres[cierres["evento"].isin(["FALLA", "FALLA (supuesta)", "PREVENTIVO"])
+                  & (cierres["componente_n"] != "") & cierres["inicio"].notna()]
+    filas = []
+    for (ln, eq, comp), g in ren.groupby(["linea_n", "equipo", "componente_n"]):
+        g = g.sort_values("inicio").drop_duplicates("id_paro")
+        nombre = g["componente"].iloc[0]
+        for prev, cur in zip(g.iloc[:-1].itertuples(), g.iloc[1:].itertuples()):
+            filas.append({
+                "linea": cur.linea, "equipo": eq, "componente": nombre,
+                "desde": prev.fin, "hasta": cur.inicio,
+                "vida_oper_h": round(reloj.operacion_entre(ln, prev.fin, cur.inicio), 1),
+                "vida_cal_h": round(max((cur.inicio - prev.fin).total_seconds() / 3600, 0), 1),
+                "estado": "FALLA" if cur.evento.startswith("FALLA") else "CENSURADA (preventivo)",
+                "id_paro_cierre": cur.id_paro,
+                "horas_paro": round(cur.horas_paro, 2),
+                "horas_interv": round(cur.horas_interv, 2),
+            })
+        ult = g.iloc[-1]
+        filas.append({
+            "linea": ult["linea"], "equipo": eq, "componente": nombre,
+            "desde": ult["fin"], "hasta": reloj.tf,
+            "vida_oper_h": round(reloj.operacion_entre(ln, ult["fin"], reloj.tf), 1),
+            "vida_cal_h": round(max((reloj.tf - ult["fin"]).total_seconds() / 3600, 0), 1),
+            "estado": "CENSURADA (sigue operando)", "id_paro_cierre": "",
+            "horas_paro": np.nan, "horas_interv": np.nan,
+        })
+    return pd.DataFrame(filas)
 
 
-def analizar_weibull(historial: pd.DataFrame, min_fallas: int = 8,
-                     razon_costo: float = 5.0) -> pd.DataFrame:
-    if historial.empty:
+def analizar_weibull(vidas: pd.DataFrame, reloj: RelojOperacion, min_fallas=8,
+                     razon_costo=5.0, ahorro_min=0.10) -> pd.DataFrame:
+    if vidas.empty:
         return pd.DataFrame()
     filas = []
-    for (eq, comp), g in historial.groupby(["equipo", "componente"]):
-        t = g["tbf_oper_h"].to_numpy(dtype=float)
-        t = t[t > 0]
-        n = len(t)
-        if n < 3:   # con 2 puntos el ajuste es degenerado (β absurdamente alto)
+    for (eq, comp), g in vidas.groupby(["equipo", "componente"]):
+        f = g.loc[g["estado"] == "FALLA", "vida_oper_h"].to_numpy(float)
+        c = g.loc[g["estado"] != "FALLA", "vida_oper_h"].to_numpy(float)
+        f = f[f > 0]
+        base = {"equipo": eq, "componente": comp, "lineas": ", ".join(sorted(g["linea"].unique())),
+                "n_fallas": len(f), "n_censuradas": int((c > 0).sum())}
+        if len(f) < 3:
+            filas.append({**base, "modelo": "SIN AJUSTE",
+                          "recomendacion": f"Faltan datos: {len(f)} vida(s) hasta falla observada(s); "
+                                           "se necesitan ≥ 3"})
             continue
-        beta, eta = _ajustar_weibull(t)
-        confiable = n >= min_fallas
-        T_opt = intervalo_optimo(beta, eta, razon_costo)
+        w = ajustar_weibull(f, c)
+        T, ahorro = intervalo_optimo(w["beta"], w["eta"], razon_costo)
+        mttf = w["eta"] * math.gamma(1 + 1 / w["beta"])
+        if w["beta_lo"] <= 1:
+            rec = "No programar preventivo por edad; usar inspección / monitoreo de condición"
+            T_txt = None
+        elif ahorro < ahorro_min:
+            rec = f"Preventivo por edad ahorra solo {ahorro:.0%}: no compensa"
+            T_txt = None
+        else:
+            frac = reloj.fraccion_operando(g["linea"].iloc[0])
+            dias = T / 24 / frac if frac > 0 else float("nan")
+            rec = f"Preventivo cada {T:,.0f} h de operación (≈ {dias:.0f} días calendario)"
+            T_txt = round(T, 0)
         filas.append({
-            "equipo": eq,
-            "componente": comp,
-            "n_fallas": n,
-            "modelo": "CONFIABLE" if confiable else "PROVISIONAL",
-            "beta": round(beta, 2),
-            "eta_h": round(eta, 1),
-            "diagnostico": diagnostico_beta(beta),
-            "mtbf_oper_h": round(float(np.mean(t)), 1),
-            "intervalo_preventivo_h": (round(T_opt, 0)
-                                       if np.isfinite(T_opt) else "N/A (no por edad)"),
-            "R_en_intervalo": (round(confiabilidad(T_opt, beta, eta), 3)
-                               if np.isfinite(T_opt) else "—"),
+            **base,
+            "modelo": "CONFIABLE" if len(f) >= min_fallas else "PROVISIONAL",
+            "beta": round(w["beta"], 2), "beta_IC90": f"{w['beta_lo']:.2f} – {w['beta_hi']:.2f}",
+            "eta_h": round(w["eta"], 1), "vida_media_h": round(mttf, 1),
+            "diagnostico": diagnostico_beta(w["beta"], w["beta_lo"], w["beta_hi"]),
+            "intervalo_preventivo_h": T_txt,
+            "R_en_intervalo": round(math.exp(-((T / w["eta"]) ** w["beta"])), 3) if T_txt else None,
+            "ahorro_vs_correr_a_falla": f"{ahorro:.0%}" if math.isfinite(T) else "0%",
+            "recomendacion": rec,
         })
-    cols_orden = ["n_fallas"]
     out = pd.DataFrame(filas)
-    return out.sort_values(cols_orden, ascending=False) if not out.empty else out
+    return out.sort_values(["n_fallas", "n_censuradas"], ascending=False)
 
 
 # ------------------------------------------------------------------------------
-# 9) ORQUESTACIÓN
+# 8) SISTEMA REPARABLE POR EQUIPO: MTBF / MTTR / Crow-AMSAA
 # ------------------------------------------------------------------------------
+def crow_amsaa(tiempos, T):
+    """β de Crow-AMSAA (truncado por tiempo) y p-valor de H0: β = 1."""
+    from scipy.stats import chi2
+    t = np.asarray([x for x in tiempos if 0 < x < T], float)
+    n = len(t)
+    if n < 4:
+        return None, None
+    s = float(np.sum(np.log(T / t)))
+    beta = n / s
+    stat = 2 * s
+    p = 2 * min(chi2.cdf(stat, 2 * n), chi2.sf(stat, 2 * n))
+    return beta, p
 
-def guardar(df: pd.DataFrame, nombre: str):
-    ruta = os.path.join(CARPETA_SALIDA, nombre)
-    df.to_csv(ruta, index=False, encoding="utf-8-sig")
-    return ruta
+
+def analisis_equipos(eventos: pd.DataFrame, cierres: pd.DataFrame,
+                     reloj: RelojOperacion) -> pd.DataFrame:
+    ev = eventos.dropna(subset=["inicio"])
+    fallas = ev[ev["motivo_n"].isin(MOTIVOS_FALLA_EQUIPO) & ~ev["programado"]]
+    esperas = ev[ev["motivo_n"].isin(MOTIVOS_ESPERA)]
+    interv = (cierres.drop_duplicates(["id_paro", "empresa"])
+                     .groupby("id_paro")["horas_interv"].max()) if not cierres.empty else pd.Series(dtype=float)
+    filas = []
+    for (ln, eq), g in fallas.groupby(["linea", "equipo"]):
+        if not str(eq).strip():
+            continue
+        T = reloj.reloj(ln, reloj.tf)
+        n = len(g)
+        mtbf = T / n if n else float("nan")
+        mttr = g["horas"].mean()
+        h_int = g["id_paro"].map(interv).dropna()
+        h_int = h_int[h_int > 0]
+        esp = esperas[(esperas["linea"] == ln) & (esperas["equipo"] == eq)]["horas"].sum()
+        b, p = crow_amsaa([reloj.reloj(ln, t) for t in g["inicio"]], T)
+        if b is None:
+            tend = "Pocos eventos (< 4)"
+        elif p < 0.10:
+            tend = "EMPEORANDO (fallas cada vez más seguidas)" if b > 1 else "MEJORANDO (fallas cada vez más espaciadas)"
+        else:
+            tend = "Estable (sin tendencia significativa)"
+        filas.append({
+            "linea": ln, "equipo": eq, "fallas": n,
+            "horas_operacion": round(T, 0),
+            "MTBF_h": round(mtbf, 1),
+            "MTTR_paro_h": round(mttr, 2),
+            "MTTR_mtto_h": round(h_int.mean(), 2) if len(h_int) else None,
+            "fallas_con_ACR": f"{len(h_int)}/{n}",
+            "horas_espera_refaccion": round(esp, 1),
+            "disponibilidad_inherente": f"{mtbf / (mtbf + mttr):.1%}" if n else "",
+            "beta_CrowAMSAA": round(b, 2) if b else None,
+            "p_valor": round(p, 3) if p is not None else None,
+            "tendencia": tend,
+        })
+    out = pd.DataFrame(filas)
+    return out.sort_values("fallas", ascending=False) if not out.empty else out
+
+
+# ------------------------------------------------------------------------------
+# 9) PLATO / NAVAJAS (exploratorio)
+# ------------------------------------------------------------------------------
+_CAUSAS_PLATO = [
+    ("Desgaste / daño", r"DESGAST|GASTAD|CHUEC|ROT[OA]|QUEBR|DESPOSTILL|FILO"),
+    ("Taponamiento", r"TAP[OÓAE]|OBSTRU|DURA"),
+    ("Calidad / figura", r"CALIDAD|FIGURA|DEFORM|EXPANSI|TAMA|LARG|CORT[OA]S? "),
+    ("Cambio de producto", r"PRODUCTO|FORMULA|SKU|ORDEN"),
+]
+
+
+def _causa_plato(txt: str) -> str:
+    t = _norm(txt)
+    for nombre, patron in _CAUSAS_PLATO:
+        if re.search(patron, t):
+            return nombre
+    return "Sin causa en la descripción"
+
+
+def vida_plato(eventos: pd.DataFrame, reloj: RelojOperacion):
+    ev = eventos[eventos["motivo_n"].str.contains(MOTIVOS_PLATO) & eventos["inicio"].notna()]
+    ev = ev.sort_values("inicio")
+    det, res = [], []
+    for ln, g in ev.groupby("linea"):
+        # cambios a menos de 2 h uno de otro = mismo cambio capturado en partes
+        grupos, actual = [], None
+        for r in g.itertuples():
+            if actual is not None and r.inicio - actual["fin"] <= timedelta(hours=2):
+                actual["fin"] = max(actual["fin"], r.fin)
+                actual["horas"] += r.horas
+                actual["desc"] += " / " + str(r.descripcion)
+            else:
+                actual = {"inicio": r.inicio, "fin": r.fin, "horas": r.horas,
+                          "desc": str(r.descripcion)}
+                grupos.append(actual)
+        for prev, cur in zip(grupos[:-1], grupos[1:]):
+            det.append({"linea": ln, "cambio": cur["inicio"],
+                        "horas_oper_desde_cambio_anterior":
+                            round(reloj.operacion_entre(ln, prev["fin"], cur["inicio"]), 1),
+                        "causa_detectada": _causa_plato(cur["desc"]),
+                        "duracion_cambio_h": round(cur["horas"], 2),
+                        "descripcion": cur["desc"][:200]})
+    det = pd.DataFrame(det)
+    if det.empty:
+        return det, det
+    for ln, g in det.groupby("linea"):
+        v = g["horas_oper_desde_cambio_anterior"]
+        res.append({"linea": ln, "cambios": len(g) + 1,
+                    "vida_mediana_h": round(v.median(), 1),
+                    "vida_P25_h": round(v.quantile(.25), 1),
+                    "vida_P75_h": round(v.quantile(.75), 1),
+                    "duracion_media_cambio_min": round(g["duracion_cambio_h"].mean() * 60, 0),
+                    "% sin causa": f"{(g['causa_detectada'] == 'Sin causa en la descripción').mean():.0%}",
+                    "% desgaste": f"{(g['causa_detectada'] == 'Desgaste / daño').mean():.0%}"})
+    return det, pd.DataFrame(res)
+
+
+# ------------------------------------------------------------------------------
+# 10) PARETO + AUDITORÍA
+# ------------------------------------------------------------------------------
+def pareto(df: pd.DataFrame, columna: str, valor: str = "horas") -> pd.DataFrame:
+    g = df.groupby(columna)[valor].sum().sort_values(ascending=False).reset_index()
+    g = g[g[valor] > 0]
+    tot = g[valor].sum()
+    g[valor] = g[valor].round(1)
+    g["%"] = (g[valor] / tot * 100).round(1) if tot else 0
+    g["% acumulado"] = g["%"].cumsum().round(1)
+    return g
+
+
+def pareto_componentes(cierres: pd.DataFrame) -> pd.DataFrame:
+    c = cierres[cierres["evento"].isin(["FALLA", "FALLA (supuesta)", "REPARACIÓN"])
+                & (cierres["componente_n"] != "")].copy()
+    if c.empty:
+        return pd.DataFrame()
+    # Un paro con 2 componentes reparte sus horas: no se cuentan dos veces.
+    n = c.groupby("id_paro")["componente"].transform("count")
+    c["horas"] = c["horas_paro"] / n
+    p = pareto(c, "componente")
+    p.insert(1, "eventos", p["componente"].map(c.groupby("componente")["id_paro"].nunique()))
+    return p
+
+
+def auditoria(info, eventos, cierres, acrs, catalogo) -> pd.DataFrame:
+    fallas_eq = eventos[eventos["motivo_n"].isin(MOTIVOS_FALLA_EQUIPO) & ~eventos["programado"]]
+    ids_acr = set(_texto(acrs, "id_paro")) if acrs is not None and not acrs.empty else set()
+    con_acr = fallas_eq["id_paro"].isin(ids_acr)
+    c = cierres if not cierres.empty else pd.DataFrame(
+        columns=["evento", "componente_n", "desalineado", "equipo_de_catalogo", "equipo", "equipo_paro"])
+    con_comp = c[c["componente_n"] != ""]
+    filas = [
+        ("Filas en PAROSV2", info["filas"], ""),
+        ("Eventos (tramos multiturno unidos)", info["eventos"], ""),
+        ("Tramos hijo sin padre (se conservan como evento)", info["huerfanos"],
+         "Revisar: el padre se borró o el ID no coincide" if info["huerfanos"] else "OK"),
+        ("Eventos sin fecha válida", info["sin_fecha"], "OK" if not info["sin_fecha"] else "Revisar TIMESTAMP"),
+        ("Fallas de equipo (correctivo / instrumentación)", len(fallas_eq), ""),
+        ("  · con cierre en ACRS", int(con_acr.sum()),
+         f"{con_acr.mean():.0%} — meta ≥ 90 %" if len(fallas_eq) else ""),
+        ("Cierres ACRS (filas)", len(acrs) if acrs is not None else 0, ""),
+        ("Intervenciones por componente", len(c), ""),
+        ("  · FALLA (renueva la vida)", int(c["evento"].str.startswith("FALLA").sum()), ""),
+        ("  · PREVENTIVO (renueva, censurada)", int((c["evento"] == "PREVENTIVO").sum()), ""),
+        ("  · REPARACIÓN", int((c["evento"] == "REPARACIÓN").sum()), ""),
+        ("  · Ajuste / Revisión (sin efecto en la vida)", int((c["evento"] == "SIN EFECTO EN VIDA").sum()), ""),
+        ("Componente y tipo desalineados", int(c["desalineado"].sum()),
+         "OK" if not c["desalineado"].any() else "Se usó el tipo dominante"),
+        ("Componentes que NO están en cat_componentes", int((~con_comp["equipo_de_catalogo"]).sum()),
+         "Texto libre: no se puede agrupar bien" if (~con_comp["equipo_de_catalogo"]).any() else "OK"),
+        ("Componentes cuyo equipo ≠ equipo capturado por producción",
+         int((con_comp["equipo_de_catalogo"] & (con_comp["equipo"].apply(_norm) != con_comp["equipo_paro"].apply(_norm))).sum()),
+         "Se usa el equipo del catálogo"),
+        ("Componentes distintos", con_comp["componente_n"].nunique(), ""),
+    ]
+    return pd.DataFrame(filas, columns=["Métrica", "Valor", "Comentario"])
+
+
+# ------------------------------------------------------------------------------
+# 11) ORQUESTACIÓN
+# ------------------------------------------------------------------------------
+def correr(paros, acrs, catalogo, min_fallas=8, razon_costo=5.0, ahorro_min=0.10) -> dict:
+    eventos, info = construir_eventos(paros)
+    reloj = RelojOperacion(eventos)
+    cierres = construir_cierres(eventos, acrs, paros, catalogo)
+    vidas = historial_vidas(cierres, reloj)
+    plato_det, plato_res = vida_plato(eventos, reloj)
+    nop = eventos[~eventos["programado"]]
+    prog = eventos[eventos["programado"]]
+    return {
+        "Auditoria": auditoria(info, eventos, cierres, acrs, catalogo),
+        "Pareto_no_programado": pareto(nop, "motivo"),
+        "Pareto_programado": pareto(prog, "motivo"),
+        "Pareto_componentes": pareto_componentes(cierres),
+        "Equipos_MTBF_MTTR": analisis_equipos(eventos, cierres, reloj),
+        "Weibull_componentes": analizar_weibull(vidas, reloj, min_fallas, razon_costo, ahorro_min),
+        "Vidas_componentes": vidas,
+        "Plato_navajas_resumen": plato_res,
+        "Plato_navajas_detalle": plato_det,
+        "Intervenciones": cierres,
+        "_reloj": reloj,
+    }
+
+
+def resumen_texto(r: dict, args) -> str:
+    rel = r["_reloj"]
+    L = ["=" * 72, "RESUMEN — Análisis de confiabilidad de paros",
+         f"Corrida: {datetime.now():%Y-%m-%d %H:%M} · Datos: {rel.t0:%d/%m/%Y} a {rel.tf:%d/%m/%Y}",
+         f"Razón de costo falla/preventivo: {args.razon_costo} · Ahorro mínimo: {args.ahorro_min:.0%}",
+         "=" * 72, "\n[1] CALIDAD DE DATOS"]
+    for _, x in r["Auditoria"].iterrows():
+        L.append(f"   {x['Métrica']}: {x['Valor']}" + (f"  ({x['Comentario']})" if x["Comentario"] else ""))
+    L.append("\n[2] PÉRDIDAS NO PROGRAMADAS — top 5")
+    for _, x in r["Pareto_no_programado"].head(5).iterrows():
+        L.append(f"   {x['motivo']}: {x['horas']:.1f} h ({x['%']}%, acum {x['% acumulado']}%)")
+    L.append("\n[3] EQUIPOS (sistema reparable)")
+    eq = r["Equipos_MTBF_MTTR"]
+    if eq.empty:
+        L.append("   Sin fallas de equipo registradas.")
+    for _, x in eq.head(8).iterrows():
+        L.append(f"   {x['linea']} · {x['equipo']}: {x['fallas']} fallas, MTBF {x['MTBF_h']} h, "
+                 f"MTTR {x['MTTR_paro_h']} h, disp. {x['disponibilidad_inherente']} → {x['tendencia']}")
+    L.append("\n[4] COMPONENTES (Weibull con censura)")
+    wb = r["Weibull_componentes"]
+    if wb.empty:
+        L.append("   Aún no hay componentes con dos o más renovaciones.")
+    sin = wb[wb["modelo"] == "SIN AJUSTE"] if not wb.empty else wb
+    if len(sin):
+        L.append(f"   {len(sin)} componente(s) aún sin datos suficientes para Weibull; los más avanzados:")
+    for _, x in pd.concat([wb[wb["modelo"] != "SIN AJUSTE"], sin.head(3)]).iterrows() if not wb.empty else []:
+        if x["modelo"] == "SIN AJUSTE":
+            L.append(f"   {x['equipo']} / {x['componente']}: {x['recomendacion']}")
+        else:
+            L.append(f"   {x['equipo']} / {x['componente']} [{x['modelo']}, {x['n_fallas']} fallas + "
+                     f"{x['n_censuradas']} censuradas]: β={x['beta']} (IC90 {x['beta_IC90']}), "
+                     f"η={x['eta_h']} h → {x['recomendacion']}")
+    L.append("\n[5] PLATO / NAVAJAS (exploratorio)")
+    for _, x in r["Plato_navajas_resumen"].iterrows():
+        L.append(f"   {x['linea']}: {x['cambios']} cambios, vida mediana {x['vida_mediana_h']} h de operación "
+                 f"(P25–P75 {x['vida_P25_h']}–{x['vida_P75_h']} h); sin causa en descripción: {x['% sin causa']}")
+    L += ["\n[6] NOTAS",
+          "   · Horas de operación = calendario − unión de paros de la línea (proxy hasta tener OEE).",
+          "   · Un Weibull PROVISIONAL no debe usarse para fijar frecuencias; sirve para orientar.",
+          "=" * 72]
+    return "\n".join(L)
+
+
+def guardar(r: dict, carpeta: str):
+    os.makedirs(carpeta, exist_ok=True)
+    ruta_x = os.path.join(carpeta, "reporte_confiabilidad.xlsx")
+    with pd.ExcelWriter(ruta_x, engine="openpyxl") as xw:
+        for nombre, df in r.items():
+            if nombre.startswith("_") or not isinstance(df, pd.DataFrame):
+                continue
+            d = df.copy()
+            for c in d.columns:
+                if pd.api.types.is_datetime64_any_dtype(d[c]):
+                    d[c] = d[c].dt.strftime("%Y-%m-%d %H:%M")
+            d.to_excel(xw, sheet_name=nombre[:31], index=False)
+            d.to_csv(os.path.join(carpeta, nombre.lower() + ".csv"), index=False, encoding="utf-8-sig")
+            ws = xw.sheets[nombre[:31]]
+            for i, c in enumerate(d.columns, 1):
+                largo = max([len(str(c))] + [len(str(v)) for v in d[c].head(200)])
+                ws.column_dimensions[ws.cell(1, i).column_letter].width = min(max(10, largo + 2), 60)
+            ws.freeze_panes = "A2"
+    return ruta_x
 
 
 def main():
     ap = argparse.ArgumentParser(description="Análisis de confiabilidad de paros")
-    ap.add_argument("--csv", help="Ruta al CSV exportado de ParosApp")
+    ap.add_argument("--xlsx", help="Libro de Excel descargado del Sheet")
+    ap.add_argument("--csv", help="CSV de la vista Exportar")
+    ap.add_argument("--componentes", help="CSV de cat_componentes (solo con --csv)")
     ap.add_argument("--sheets", action="store_true", help="Leer de Google Sheets")
-    ap.add_argument("--min-fallas", type=int, default=8,
-                    help="Mínimo de fallas para marcar el modelo como CONFIABLE")
-    ap.add_argument("--razon-costo", type=float, default=5.0,
-                    help="costo_correctivo / costo_preventivo")
+    ap.add_argument("--min-fallas", type=int, default=8)
+    ap.add_argument("--razon-costo", type=float, default=5.0)
+    ap.add_argument("--ahorro-min", type=float, default=0.10)
+    ap.add_argument("--salida", default=CARPETA_SALIDA)
     args = ap.parse_args()
 
-    os.makedirs(CARPETA_SALIDA, exist_ok=True)
-
     if args.sheets:
-        df = cargar_desde_sheets()
+        paros, acrs, cat = cargar_desde_sheets()
+    elif args.xlsx:
+        paros, acrs, cat = cargar_desde_xlsx(args.xlsx)
     elif args.csv:
-        df = cargar_desde_csv(args.csv)
+        paros, acrs, cat = cargar_desde_csv(args.csv, args.componentes)
     else:
-        sys.exit("Indica --csv RUTA o --sheets")
+        sys.exit("Indica --xlsx RUTA, --csv RUTA o --sheets")
 
-    df = normalizar(df)
-
-    aud = auditoria_calidad(df)
-    guardar(aud, "auditoria_calidad.csv")
-
-    par_mot = pareto(df, "motivo_n");  guardar(par_mot, "pareto_motivos.csv")
-    par_com = pareto(df[df["es_falla"]], "componente_n")
-    guardar(par_com, "pareto_componentes.csv")
-
-    hist = construir_historial(df);     guardar(hist, "historial_fallas.csv")
-    mm   = mtbf_mttr(hist);             guardar(mm, "mtbf_mttr.csv")
-    wb   = analizar_weibull(hist, args.min_fallas, args.razon_costo)
-    guardar(wb, "weibull_resultados.csv")
-
-    # Reparaciones aparte: insumo para análisis de sistema reparable
-    # (Crow-AMSAA / NHPP) — fuera del alcance del Weibull clásico.
-    reparaciones = df[df["es_reparacion"]][
-        ["fecha", "linea", "equipo", "componente", "causa_raiz",
-         "accion", "horas"]
-    ].copy()
-    guardar(reparaciones, "eventos_reparacion.csv")
-
-    # ---- Resumen ejecutivo ----
-    lineas = []
-    lineas.append("=" * 70)
-    lineas.append("RESUMEN DE CORRIDA — Análisis de confiabilidad de paros")
-    lineas.append(f"Fecha de corrida: {datetime.now():%Y-%m-%d %H:%M}")
-    lineas.append("=" * 70)
-    lineas.append("\n[1] CALIDAD DE DATOS")
-    for _, r in aud.iterrows():
-        lineas.append(f"   - {r['Métrica']}: {r['Valor']} ({r['Cobertura']})")
-
-    lineas.append("\n[2] PARETO — top motivos por horas perdidas")
-    for _, r in par_mot.head(5).iterrows():
-        lineas.append(f"   - {r['motivo']}: {r['horas']:.1f} h "
-                      f"({r['%']}%, acum {r['% acumulado']}%)")
-
-    lineas.append("\n[3] MODELO WEIBULL (provisional)")
-    if wb.empty:
-        lineas.append("   Aún no hay suficientes fallas por componente para ajustar.")
-        lineas.append("   -> Necesario: acumular eventos con COMPONENTE identificado.")
-    else:
-        for _, r in wb.iterrows():
-            lineas.append(
-                f"   - {r['equipo']} / {r['componente']} "
-                f"[{r['modelo']}, n={r['n_fallas']}]: "
-                f"β={r['beta']}, η={r['eta_h']} h, "
-                f"intervalo={r['intervalo_preventivo_h']} h | {r['diagnostico']}"
-            )
-
-    lineas.append("\n[4] RECORDATORIO")
-    lineas.append("   El TBF operativo es PROVISIONAL (calendario − downtime).")
-    lineas.append("   El dato definitivo son las horas de operación del OEE (Ing. Barba).")
-    lineas.append("=" * 70)
-
-    resumen = "\n".join(lineas)
-    with open(os.path.join(CARPETA_SALIDA, "resumen.txt"), "w", encoding="utf-8") as f:
-        f.write(resumen)
-    print(resumen)
-    print(f"\nEntregables escritos en ./{CARPETA_SALIDA}/")
+    r = correr(paros, acrs, cat, args.min_fallas, args.razon_costo, args.ahorro_min)
+    ruta = guardar(r, args.salida)
+    txt = resumen_texto(r, args)
+    with open(os.path.join(args.salida, "resumen.txt"), "w", encoding="utf-8") as f:
+        f.write(txt)
+    print(txt)
+    print(f"\nReporte: {ruta}")
 
 
 if __name__ == "__main__":
