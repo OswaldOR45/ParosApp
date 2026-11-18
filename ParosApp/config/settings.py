@@ -188,6 +188,7 @@ MOTIVOS = [
      "Si es taponamiento por mala molienda «Error Operativo» "),
     ("Secuencia de producción", NO_PROGRAMADO, CAT_PLANEACION,
     "Paro para cambiar de producto según el orden de fabricación definido en la programación. "
+    "O por cambio repentino en la programación (urgencia)"
     "Incluye el tiempo de limpieza, purga, cambio de formulación o de plato/punta, y ajustes de "
     "arranque al pasar de una orden a otra (por ejemplo, de una formulación de perro a una de gato). "
     "No incluye paros por falta de programación (Error de Programación), por tiempo insuficiente "
