@@ -22,9 +22,8 @@ import streamlit as st
 from data.sheets import leer_paros, leer_acrs
 from utils.auth import requiere_empresa
 from utils.filtros import COLOR_EMPRESA, LINEAS, filtrar_fechas, filtrar_linea, selector_periodo
-from utils.mtto import (COLOR_ESPERA, COLOR_REPARACION, COLOR_TIPO, eventos, fmt_h,
-                        horas_intervencion, pendientes, separar_componentes)
-from utils.tiempo import hhmm_a_horas
+from utils.mtto import (COLOR_ESPERA, COLOR_REPARACION, COLOR_TIPO, a_num, eventos, fmt_h,
+                        horas_col, horas_intervencion, pendientes, separar_componentes)
 
 EMPRESA = requiere_empresa("Dashboard de Mantenimiento")
 st.title("Dashboard de Mantenimiento")
@@ -42,7 +41,7 @@ if acrs.empty or "id_paro" not in acrs.columns:
 acrs = acrs.copy()
 acrs["id_paro"] = acrs["id_paro"].astype(str).str.strip()
 acrs["empresa"] = acrs.get("empresa", "").astype(str).str.strip().str.upper()
-acrs["h_int"] = acrs.get("dur_int", "").apply(hhmm_a_horas)
+acrs["h_int"] = horas_col(acrs, "dur_int")
 
 # --- Filtros (una sola fila) -----------------------------------------------
 fa, fb = st.columns([3, 2])
@@ -67,7 +66,8 @@ interv = pd.Series({pid: horas_intervencion(g) for pid, g in acr_f.groupby("id_p
                    name="h_rep", dtype=float)
 emp_por_paro = acr_f.groupby("id_paro")["empresa"].agg(lambda s: " y ".join(sorted(set(s))))
 cer = ev_f[ev_f["id_paro"].isin(interv.index)].copy()
-cer["h_rep"] = cer["id_paro"].map(interv)
+cer["h_paro"] = a_num(cer["h_paro"])
+cer["h_rep"] = a_num(cer["id_paro"].map(interv)).fillna(0.0)
 cer["empresas"] = cer["id_paro"].map(emp_por_paro)
 cer["h_espera"] = (cer["h_paro"] - cer["h_rep"]).clip(lower=0)
 

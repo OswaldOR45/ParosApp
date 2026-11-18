@@ -39,6 +39,23 @@ def a_fecha(serie: pd.Series) -> pd.Series:
     return pd.Series(f.to_numpy(dtype="datetime64[ns]"), index=serie.index)
 
 
+def a_num(serie) -> pd.Series:
+    """Cualquier columna -> float64 de NumPy (nunca Arrow, aun si está vacía).
+    En Streamlit Cloud (pandas 3 + pyarrow), map/apply sobre una columna de
+    texto vacía devuelve tipo texto Arrow y las restas de horas truenan."""
+    if not isinstance(serie, pd.Series):
+        serie = pd.Series(serie)
+    vals = pd.to_numeric(serie.astype(object), errors="coerce")
+    return pd.Series(np.asarray(vals, dtype="float64"), index=serie.index)
+
+
+def horas_col(df: pd.DataFrame, col: str) -> pd.Series:
+    """Columna 'H:MM' -> horas float64 (0 si falta o está vacía)."""
+    if col not in df.columns:
+        return pd.Series(0.0, index=df.index, dtype="float64")
+    return a_num([hhmm_a_horas(v) for v in df[col].astype(object)]).set_axis(df.index).fillna(0.0)
+
+
 def fmt_h(horas) -> str:
     """1.8333 -> '1:50'."""
     try:
@@ -65,14 +82,14 @@ def eventos(df: pd.DataFrame) -> pd.DataFrame:
         return df
     d = df.copy()
     d["id_paro"] = _txt(d, "id_paro")
-    d["h_tramo"] = (_txt(d, "dur_prog").apply(hhmm_a_horas)
-                    + _txt(d, "dur_noprog").apply(hhmm_a_horas))
+    d["h_tramo"] = horas_col(d, "dur_prog") + horas_col(d, "dur_noprog")
     hijo = _txt(d, "es_continuacion").str.upper().isin(LEGACY)
     padre = _txt(d, "paro_padre")
     hijos = d[hijo]
     ev = d[~hijo].copy()
-    ev["h_paro"] = ev["h_tramo"] + ev["id_paro"].map(
-        hijos.groupby(padre[hijos.index])["h_tramo"].sum()).fillna(0.0)
+    extra = a_num(ev["id_paro"].map(
+        hijos.groupby(padre[hijos.index])["h_tramo"].sum())).fillna(0.0)
+    ev["h_paro"] = a_num(ev["h_tramo"]) + extra
     ev["n_tramos"] = 1 + ev["id_paro"].map(padre[hijos.index].value_counts()).fillna(0).astype(int)
     ev["en_curso"] = _txt(ev, "paro_en_curso").str.upper().isin(LEGACY)
     ev["fecha"] = a_fecha(_txt(ev, "timestamp"))
@@ -152,7 +169,8 @@ def horas_intervencion(grupo: pd.DataFrame) -> float:
                 tot += cb - ca
                 ca, cb = a, b
         return (tot + cb - ca) / 60.0
-    return float(grupo.get("dur_int", pd.Series(dtype=str)).apply(hhmm_a_horas).max() or 0.0)
+    h = horas_col(grupo, "dur_int")
+    return float(h.max()) if len(h) else 0.0
 
 
 def separar_componentes(comp: str, tipo: str) -> list[tuple[str, str]]:
