@@ -4,6 +4,7 @@ Lógica compartida por «Mantenimiento» (completar paros) y «Dashboard Mtto».
 Tenerla en un solo lugar garantiza que el número de pendientes, la duración
 de cada evento y el tiempo de intervención salgan IGUAL en las dos pantallas.
 """
+import numpy as np
 import pandas as pd
 
 from utils.tiempo import hhmm_a_horas, hoy_mx
@@ -29,6 +30,13 @@ COLOR_TIPO = {"Reemplazo": "#6250d6", "Reparación": "#1baf7a",
 def _txt(df, col):
     return (df[col].fillna("").astype(str).str.strip() if col in df.columns
             else pd.Series("", index=df.index))
+
+
+def a_fecha(serie: pd.Series) -> pd.Series:
+    """Texto -> datetime64[ns] de NumPy (nunca Arrow), para que las restas de
+    fechas funcionen igual en cualquier versión de pandas / pyarrow."""
+    f = pd.to_datetime(serie.astype(object), errors="coerce")
+    return pd.Series(f.to_numpy(dtype="datetime64[ns]"), index=serie.index)
 
 
 def fmt_h(horas) -> str:
@@ -67,7 +75,7 @@ def eventos(df: pd.DataFrame) -> pd.DataFrame:
         hijos.groupby(padre[hijos.index])["h_tramo"].sum()).fillna(0.0)
     ev["n_tramos"] = 1 + ev["id_paro"].map(padre[hijos.index].value_counts()).fillna(0).astype(int)
     ev["en_curso"] = _txt(ev, "paro_en_curso").str.upper().isin(LEGACY)
-    ev["fecha"] = pd.to_datetime(_txt(ev, "timestamp"), errors="coerce")
+    ev["fecha"] = a_fecha(_txt(ev, "timestamp"))
     ev["apoyo"] = _txt(ev, "necesita_acr").str.upper()
     for c in ("linea", "equipo", "area", "motivo", "descripcion", "turno"):
         ev[c] = _txt(ev, c)
@@ -101,7 +109,12 @@ def pendientes(ev: pd.DataFrame, acrs: pd.DataFrame, empresa: str) -> pd.DataFra
     p["faltan"] = [empresas_faltantes(i, a, cerr, empresa)
                    for i, a in zip(p["id_paro"], p["apoyo"])]
     p = p[p["faltan"].str.len() > 0]
-    p["dias"] = (hoy_mx() - p["fecha"].dt.normalize()).dt.days.fillna(0).astype(int)
+    # Resta en NumPy: con pandas 3 + pyarrow reciente, Timestamp − columna Arrow
+    # lanza ArrowNotImplementedError (pasó en Streamlit Cloud, Python 3.14).
+    hoy = np.datetime64(hoy_mx().to_datetime64(), "D")
+    dias_f = p["fecha"].to_numpy(dtype="datetime64[ns]").astype("datetime64[D]")
+    dias = (hoy - dias_f).astype("timedelta64[D]").astype(np.int64)
+    p["dias"] = np.where(np.isnat(dias_f), 0, dias)
     return p.sort_values("fecha")
 
 
